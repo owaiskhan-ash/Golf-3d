@@ -7,9 +7,11 @@ import { YARDS_TO_M } from '../physics/constants';
 interface MinimapProps {
   snap: EngineSnapshot;
   onAimWorld: (x: number, z: number) => void;
+  /** Render un-positioned (full width) so the map can live inside the mobile side drawer. */
+  inline?: boolean;
 }
 
-export const Minimap: React.FC<MinimapProps> = ({ snap, onAimWorld }) => {
+export const Minimap: React.FC<MinimapProps> = ({ snap, onAimWorld, inline = false }) => {
   const [open, setOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const { hole, ballPos, cupPos, aimYawRad, selectedClub } = snap;
@@ -151,7 +153,13 @@ export const Minimap: React.FC<MinimapProps> = ({ snap, onAimWorld }) => {
   };
 
   return (
-    <div className="pointer-events-auto fixed bottom-3 left-3 z-20 flex flex-col items-start">
+    <div
+      className={
+        inline
+          ? 'pointer-events-auto flex w-full flex-col items-start'
+          : 'pointer-events-auto fixed bottom-3 left-3 z-20 flex flex-col items-start'
+      }
+    >
       {open && (
         <div className="hud-glass mb-2 flex flex-col overflow-hidden rounded-2xl p-2 shadow-2xl">
           <div className="mb-1 flex items-center justify-between px-1">

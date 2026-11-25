@@ -36,7 +36,7 @@ interface TopBarProps {
   onOpenSettings: () => void;
 }
 
-const SURFACE_BADGES: Record<string, { label: string; color: string }> = {
+export const SURFACE_BADGES: Record<string, { label: string; color: string }> = {
   tee: { label: 'TEE', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30' },
   fairway: { label: 'FAIRWAY', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30' },
   fringe: { label: 'FRINGE', color: 'bg-lime-500/20 text-lime-300 border-lime-400/30' },

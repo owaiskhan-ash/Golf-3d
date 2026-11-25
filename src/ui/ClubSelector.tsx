@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 import { CLUB_BAG, type ClubSpec } from '../physics/clubs';
+import { useIsMobile } from './useIsMobile';
 
 interface ClubSelectorProps {
   selectedClub: ClubSpec;
@@ -16,11 +17,16 @@ export const ClubSelector: React.FC<ClubSelectorProps> = ({
   onSelectClub,
 }) => {
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   return (
-    <div className="pointer-events-auto fixed bottom-3 right-3 z-30 flex flex-col items-end">
+    <div
+      className={`pointer-events-auto fixed z-30 flex flex-col items-end ${
+        isMobile ? 'bottom-[6.5rem] right-2' : 'bottom-3 right-3'
+      }`}
+    >
       {open && (
-        <div className="hud-glass mb-2 max-h-[340px] w-72 overflow-y-auto rounded-2xl p-2">
+        <div className="hud-glass mb-2 max-h-[340px] w-72 max-w-[86vw] overflow-y-auto rounded-2xl p-2">
           <div className="mb-1.5 flex items-center justify-between px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
             <span>Tour Bag (15 Clubs)</span>
             <span>Carry · Loft</span>
