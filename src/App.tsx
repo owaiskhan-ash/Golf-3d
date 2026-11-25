@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { COURSE_HOLES } from './course/courseData';
 import type { DifficultyMode } from './course/types';
 import { GolfEngine, type EngineSnapshot, type HoleRoundMeta } from './engine/GolfEngine';
+import { loadingTracker, type LoadingState } from './engine/loadingTracker';
 import type { GraphicsQuality } from './engine/PostProcessing';
 import type { TimeOfDayPreset } from './engine/SkyAtmosphere';
 import {
@@ -17,6 +18,7 @@ import { Minimap } from './ui/Minimap';
 import { MobileHud } from './ui/MobileHud';
 import { ScorecardModal } from './ui/ScorecardModal';
 import { SettingsModal } from './ui/SettingsModal';
+import { SplashScreen } from './ui/SplashScreen';
 import { SwingControls } from './ui/SwingControls';
 import { TelemetryPanel } from './ui/TelemetryPanel';
 import { TopBar } from './ui/TopBar';
@@ -43,6 +45,12 @@ export const App: React.FC = () => {
   const [aimPreviewEnabled, setAimPreviewEnabled] = useState(true);
   const [proTracerEnabled, setProTracerEnabled] = useState(true);
   const isMobile = useIsMobile();
+  const [splash, setSplash] = useState<LoadingState>({
+    progress: 0.04,
+    label: 'Warming up',
+    done: false,
+  });
+  const [splashGone, setSplashGone] = useState(false);
 
   // Mobile gameplay: lock the camera (the swipe-to-swing gesture owns the touchscreen)
   // and hide the blue aim-trace line so the viewport stays clean and immersive.
@@ -56,6 +64,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     const container = viewportRef.current;
     if (!container) return;
+
+    // Subscribe BEFORE engine construction so the splash catches every real milestone
+    const unsubLoading = loadingTracker.subscribe(setSplash);
 
     const engine = new GolfEngine(container);
     engineRef.current = engine;
@@ -154,10 +165,18 @@ export const App: React.FC = () => {
     return () => {
       window.removeEventListener('keydown', onKey);
       unsub();
+      unsubLoading();
       engine.dispose();
       engineRef.current = null;
     };
   }, []);
+
+  // Fade the splash out once real loading completes, then unmount it
+  useEffect(() => {
+    if (!splash.done) return;
+    const t = setTimeout(() => setSplashGone(true), 750);
+    return () => clearTimeout(t);
+  }, [splash.done]);
 
   const handleContinueHoled = () => {
     const eng = engineRef.current;
@@ -175,6 +194,11 @@ export const App: React.FC = () => {
     <div className="relative h-dvh w-screen overflow-hidden bg-slate-950">
       {/* Live 3D WebGL Viewport */}
       <div ref={viewportRef} className="absolute inset-0 h-full w-full" />
+
+      {/* Boot splash — tracks real engine/asset loading, fades out when ready */}
+      {!splashGone && (
+        <SplashScreen progress={splash.progress} label={splash.label} done={splash.done} />
+      )}
 
       {snap && (
         <>

@@ -30,6 +30,7 @@ import {
 } from './SkyAtmosphere';
 import { TerrainMeshSystem } from './TerrainMesh';
 import { VisualAidsSystem } from './VisualAids';
+import { loadingTracker } from './loadingTracker';
 
 export type ShotPlayState = 'ready' | 'swinging' | 'ball_in_motion' | 'shot_complete' | 'holed_out' | 'replaying';
 
@@ -218,6 +219,7 @@ export class GolfEngine {
   private lastUiEmitTime = 0;
   private lastGolferMeshVersion = -1;
   private lastReportedOrbited = false;
+  private firstFrameRendered = false;
   private disposed = false;
 
   constructor(private readonly container: HTMLElement) {
@@ -255,6 +257,7 @@ export class GolfEngine {
     // post-processing features and foliage density. ULTRA remains available in settings and
     // the auto-scaler can still step down further on weak GPUs.
     this.setGraphicsQuality(this.qualityLevel);
+    loadingTracker.markEngineBuilt();
 
     window.addEventListener('resize', this.handleResize);
     this.startLoop();
@@ -1587,6 +1590,12 @@ export class GolfEngine {
       this.postProc.updateSun(this.skySys.sunDirection, this.skySys.sunLight.color);
       this.postProc.updateCameraLens(dt, focusDist, dofStrength, this.skySys.sunDirection.y);
       this.postProc.render();
+
+      // First real frame on the canvas — splash loader's final milestone
+      if (!this.firstFrameRendered) {
+        this.firstFrameRendered = true;
+        loadingTracker.markFirstFrame();
+      }
     };
 
     this.rafId = requestAnimationFrame(tick);
