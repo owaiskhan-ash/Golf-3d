@@ -113,9 +113,19 @@ export function simulateFullShot(
       if (pos.y > apexY) apexY = pos.y;
 
       const surfaceY = terrain.getHeight(pos.x, pos.z) + BALL_RADIUS_M;
-      if (pos.y <= surfaceY) {
+      let touchedDown = pos.y <= surfaceY;
+      let splashedAtSeaPlane = false;
+      // Over the ocean the visible surface is the y=0 water plane, not the seabed below —
+      // end the flight there so preview arcs & splash handling never dive underwater.
+      if (!touchedDown && pos.y <= BALL_RADIUS_M + 0.02) {
+        if (terrain.getSurface(pos.x, pos.z) === 'water') {
+          touchedDown = true;
+          splashedAtSeaPlane = true;
+        }
+      }
+      if (touchedDown) {
         const surf = terrain.getSurface(pos.x, pos.z);
-        pos.y = surfaceY;
+        pos.y = splashedAtSeaPlane ? BALL_RADIUS_M * 0.4 : surfaceY;
 
         if (!hasLanded) {
           hasLanded = true;
@@ -125,7 +135,7 @@ export function simulateFullShot(
           landingAngleDeg = Math.atan2(Math.abs(vel.y), Math.max(0.01, horizSpd)) * RAD_TO_DEG;
         }
 
-        if (surf === 'water' || pos.y <= BALL_RADIUS_M + 0.02) {
+        if (splashedAtSeaPlane || surf === 'water' || pos.y <= BALL_RADIUS_M + 0.02) {
           // Water hazard
           flightPoints.push({ ...pos });
           break;
