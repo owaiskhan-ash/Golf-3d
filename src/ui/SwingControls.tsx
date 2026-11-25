@@ -71,6 +71,18 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     dy: number;
     maxPullPx: number;
   } | null>(null);
+  // Ref mirrors: gesture logic runs off refs (no side effects inside state updaters),
+  // state only drives the overlay render.
+  const swipePullRef = useRef<{
+    startX: number;
+    startY: number;
+    dx: number;
+    dy: number;
+    maxPullPx: number;
+  } | null>(null);
+  // Aim yaw at gesture start + last applied yaw, so the pull angle steers the REAL
+  // shot direction live (and can be reverted exactly if the gesture is cancelled).
+  const swipeAimRef = useRef<{ startYaw: number; appliedYaw: number } | null>(null);
 
   const isReady = snap.playState === 'ready';
   const isPutting = snap.selectedClub.category === 'putter';
@@ -285,56 +297,93 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
         { id: 'pro_sim', label: 'Pro Sim' },
       ];
 
-  // Swipe pull-angle derived values: pull DOWN for power, pull at an ANGLE to shape the
-  // shot (down-right = in-out path = draw, down-left = out-in = fade).
+  // Swipe pull mechanics: pull DOWN for power (eased — gentler at the start, finer on
+  // putts), and the pull ANGLE steers the shot's actual aim direction live.
+  // Pull right = aim right (±12° full shots, ±5° putts). One finger does everything.
+  const swipeAimRangeDeg = isPutting ? 5 : 12;
   let swipePowerRatio = 0;
-  let swipePathDeltaDeg = 0;
+  let swipeAimOffsetDeg = 0;
   if (swipePull) {
-    const pull = Math.max(0, swipePull.dy);
-    swipePowerRatio = Math.min(1.06, pull / swipePull.maxPullPx);
+    const pullFrac = Math.min(1, Math.max(0, swipePull.dy) / swipePull.maxPullPx);
+    swipePowerRatio = isPutting
+      ? Math.pow(pullFrac, 1.35)
+      : Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06);
     const angleDeg = Math.max(
       -40,
       Math.min(40, (Math.atan2(swipePull.dx, Math.max(30, swipePull.dy)) * 180) / Math.PI)
     );
-    swipePathDeltaDeg = (angleDeg / 40) * 6;
+    swipeAimOffsetDeg = (angleDeg / 40) * swipeAimRangeDeg;
   }
-  const swipeShape =
-    Math.abs(swipePathDeltaDeg) < 0.8 ? 'Straight' : swipePathDeltaDeg > 0 ? 'Draw' : 'Fade';
   const swipeColor =
     swipePowerRatio > 0.85 ? '#fbbf24' : swipePowerRatio > 0.5 ? '#34d399' : '#38bdf8';
 
-  // Full-screen Swipe Pull-Angle handlers (mobile)
+  // Full-screen Swipe Pull-Angle handlers (mobile, one finger):
+  // touch anywhere → pull down for power → tilt left/right to steer the REAL aim → release.
   const handleSwipePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (mode !== 'swipe_pull' || !isReady) return;
+    if (swipePullRef.current) return; // one-finger gesture — ignore extra touches
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    setSwipePull({
+    swipeAimRef.current = { startYaw: snap.aimYawRad, appliedYaw: snap.aimYawRad };
+    const start = {
       startX: e.clientX,
       startY: e.clientY,
       dx: 0,
       dy: 0,
       maxPullPx: Math.max(170, window.innerHeight * 0.34),
-    });
+    };
+    swipePullRef.current = start;
+    setSwipePull(start);
   };
 
   const handleSwipePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    setSwipePull((cur) =>
-      cur ? { ...cur, dx: e.clientX - cur.startX, dy: e.clientY - cur.startY } : cur
-    );
+    const cur = swipePullRef.current;
+    if (!cur) return;
+    const next = { ...cur, dx: e.clientX - cur.startX, dy: e.clientY - cur.startY };
+    swipePullRef.current = next;
+    setSwipePull(next);
+
+    // Live aim steering: the pull angle rotates the engine's actual aim yaw, so the
+    // locked camera swings with the shot direction while the user drags.
+    const aim = swipeAimRef.current;
+    if (aim && next.dy > 8) {
+      const angleDeg = Math.max(
+        -40,
+        Math.min(40, (Math.atan2(next.dx, Math.max(30, next.dy)) * 180) / Math.PI)
+      );
+      const desiredYaw = aim.startYaw + ((angleDeg / 40) * swipeAimRangeDeg * Math.PI) / 180;
+      const delta = desiredYaw - aim.appliedYaw;
+      if (Math.abs(delta) > 0.0008) {
+        aim.appliedYaw = desiredYaw;
+        onAdjustAim(delta);
+      }
+    }
   };
 
   const handleSwipePointerUp = () => {
-    if (!swipePull) return;
-    const { dx, dy, maxPullPx } = swipePull;
+    const cur = swipePullRef.current;
+    swipePullRef.current = null;
     setSwipePull(null);
-    const pull = Math.max(0, dy);
-    if (pull < 22 || !isReady) return; // tiny tap = cancel, never fire accidental shots
-    const powerRatio = Math.max(0.08, Math.min(1.06, pull / maxPullPx));
-    const angleDeg = Math.max(-40, Math.min(40, (Math.atan2(dx, Math.max(30, dy)) * 180) / Math.PI));
-    const pathDeltaDeg = (angleDeg / 40) * 6;
+    const aim = swipeAimRef.current;
+    swipeAimRef.current = null;
+    if (!cur) return;
+
+    const pull = Math.max(0, cur.dy);
+    if (pull < 22 || !isReady) {
+      // Cancelled: restore aim exactly to where it was before the gesture started
+      if (aim && Math.abs(aim.appliedYaw - aim.startYaw) > 0.0005) {
+        onAdjustAim(aim.startYaw - aim.appliedYaw);
+      }
+      return;
+    }
+    const pullFrac = Math.min(1, pull / cur.maxPullPx);
+    const powerRatio = isPutting
+      ? Math.max(0.06, Math.pow(pullFrac, 1.35))
+      : Math.max(0.08, Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06));
+    // Fire along the steered aim; shaping sliders still apply on top for pro users
     onExecuteShot({
       powerRatio,
-      clubPathDeg: clubPathDeg + pathDeltaDeg,
-      faceAngleDeg: faceAngleDeg + pathDeltaDeg * 0.45,
+      clubPathDeg,
+      faceAngleDeg,
       attackAngleDeltaDeg,
       dynamicLoftDeltaDeg,
       strikeOffsetXMm,
@@ -515,14 +564,14 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
               <span className="text-slate-500">·</span>
               <span
                 className={
-                  swipeShape === 'Straight'
-                    ? 'text-white'
-                    : swipeShape === 'Draw'
-                      ? 'text-sky-300'
-                      : 'text-amber-300'
+                  Math.abs(swipeAimOffsetDeg) < 0.5 ? 'text-white' : 'text-sky-300'
                 }
               >
-                {swipeShape}
+                {Math.abs(swipeAimOffsetDeg) < 0.5
+                  ? 'Aim straight'
+                  : `Aim ${Math.abs(swipeAimOffsetDeg).toFixed(0)}° ${
+                      swipeAimOffsetDeg > 0 ? 'R' : 'L'
+                    }`}
               </span>
               {isPutting && (
                 <>
@@ -982,7 +1031,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
             </div>
             <div className="flex items-center gap-1.5 rounded-xl border border-dashed border-emerald-400/40 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-200">
               <Crosshair className="h-3.5 w-3.5 shrink-0" />
-              {isReady ? 'Pull back on the course to swing' : 'Ball away...'}
+              {isReady ? 'Pull back to swing — tilt to steer' : 'Ball away...'}
             </div>
             <button
               onClick={() => setShowProDrawer((v) => !v)}
