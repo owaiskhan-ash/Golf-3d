@@ -98,7 +98,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
   // Sync Pro Sim sliders to 3D aim preview arc
   useEffect(() => {
     onUpdatePreview({
-      powerRatio: (isPutting ? proPowerPct : proPowerPct) / 100,
+      powerRatio: proPowerPct / 100,
       clubPathDeg,
       faceAngleDeg,
       attackAngleDeltaDeg,
