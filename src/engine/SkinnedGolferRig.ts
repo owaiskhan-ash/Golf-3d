@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { loadingTracker } from './loadingTracker';
 import type { ClubCategory, ClubSpec } from '../physics/clubs';
 import { BALL_RADIUS_M } from '../physics/constants';
 import { GolferRig, type SwingAnimPhase } from './GolferRig';
@@ -276,11 +277,17 @@ export class SkinnedGolferRig {
     loader.load(
       url,
       (gltf) => {
+        loadingTracker.markGolferSettled();
         if (this.disposed) return;
         this.attachLoadedCharacter(gltf.scene);
       },
-      undefined,
+      (evt: ProgressEvent) => {
+        // Real download bytes drive the splash progress bar (13 MB asset)
+        const total = evt.lengthComputable && evt.total > 0 ? evt.total : 13_500_000;
+        loadingTracker.setGolferProgress(Math.min(0.99, evt.loaded / total));
+      },
       (err) => {
+        loadingTracker.markGolferSettled();
         console.warn('Could not load hyper-realistic golfer.glb, using procedural rig fallback:', err);
         this.fallbackRig.root.visible = true;
       }
