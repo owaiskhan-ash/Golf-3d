@@ -34,6 +34,22 @@ export class CameraSystem {
   private lastPinchDist: number | null = null;
   private isDraggingOrbit = false;
 
+  // Input lock (mobile): the swipe-to-swing gesture owns the touchscreen, so orbit
+  // drags / pinch zoom / wheel zoom are all disabled and the camera stays fixed.
+  public inputLocked = false;
+
+  public setInputLocked(locked: boolean): void {
+    this.inputLocked = locked;
+    this.controls.enabled = this.mode === 'scout' && !locked;
+    if (locked) {
+      this.activePointers.clear();
+      this.isDraggingOrbit = false;
+      this.lastPinchDist = null;
+    }
+    this.domElement.style.cursor =
+      !locked && (this.mode === 'address' || this.mode === 'scout') ? 'grab' : 'default';
+  }
+
   constructor(private readonly domElement: HTMLElement, aspect: number) {
     this.camera = new THREE.PerspectiveCamera(48, aspect, 0.15, 3200);
     this.camera.position.set(0, 22, 6);
@@ -76,6 +92,7 @@ export class CameraSystem {
   }
 
   private onPointerDown = (e: PointerEvent): void => {
+    if (this.inputLocked) return;
     if (this.mode !== 'address') return;
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -120,6 +137,7 @@ export class CameraSystem {
   };
 
   private onWheel = (e: WheelEvent): void => {
+    if (this.inputLocked) return;
     if (this.mode !== 'address') return;
     e.preventDefault();
     const factor = 1 + Math.sign(e.deltaY) * 0.11;
@@ -145,12 +163,13 @@ export class CameraSystem {
     aimYawRad = 0
   ): void {
     this.mode = mode;
-    this.controls.enabled = mode === 'scout';
+    this.controls.enabled = mode === 'scout' && !this.inputLocked;
     if (mode !== 'address') {
       this.activePointers.clear();
       this.isDraggingOrbit = false;
     }
-    this.domElement.style.cursor = mode === 'address' || mode === 'scout' ? 'grab' : 'default';
+    this.domElement.style.cursor =
+      !this.inputLocked && (mode === 'address' || mode === 'scout') ? 'grab' : 'default';
 
     if (mode === 'follow') {
       this.smoothFollowDir.set(Math.sin(aimYawRad), -Math.cos(aimYawRad)).normalize();

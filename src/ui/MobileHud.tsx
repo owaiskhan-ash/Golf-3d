@@ -268,7 +268,7 @@ export const MobileHud: React.FC<MobileHudProps> = ({
                     </div>
                     {snap.cameraMode === 'scout' && (
                       <div className="mb-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-[10px] text-sky-200">
-                        Drag to orbit · pinch to zoom
+                        Hole overview — camera stays locked during play
                       </div>
                     )}
 

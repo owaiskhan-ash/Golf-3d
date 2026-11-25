@@ -136,6 +136,8 @@ export class GolfEngine {
   public flagstickInCup = true;
   public greenGridVisible = false;
   public showAimPreview = true;
+  /** Mobile: hides the blue aim-trace line for a clean, immersive viewport. Overrides showAimPreview. */
+  public aimPreviewSuppressed = false;
   public foliageDensity: FoliageDensity = 'high';
   public difficulty: DifficultyMode = 'pro';
   public qualityLevel: GraphicsQuality = 'high';
@@ -686,6 +688,15 @@ export class GolfEngine {
     this.updatePreviewArc();
   }
 
+  public setAimPreviewSuppressed(suppressed: boolean): void {
+    this.aimPreviewSuppressed = suppressed;
+    this.updatePreviewArc();
+  }
+
+  public setCameraLocked(locked: boolean): void {
+    this.cameraSys.setInputLocked(locked);
+  }
+
   private lastPreviewInputs = {
     powerRatio: 1.0,
     clubPathDeg: 0,
@@ -700,7 +711,7 @@ export class GolfEngine {
     if (overrides) {
       this.lastPreviewInputs = { ...this.lastPreviewInputs, ...overrides };
     }
-    if (!this.showAimPreview || this.playState !== 'ready') {
+    if ((!this.showAimPreview || this.aimPreviewSuppressed) || this.playState !== 'ready') {
       this.visualAids.updateAimPreview([], null, this.sampler, false, false);
       return;
     }

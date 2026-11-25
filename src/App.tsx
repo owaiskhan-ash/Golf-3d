@@ -44,6 +44,15 @@ export const App: React.FC = () => {
   const [proTracerEnabled, setProTracerEnabled] = useState(true);
   const isMobile = useIsMobile();
 
+  // Mobile gameplay: lock the camera (the swipe-to-swing gesture owns the touchscreen)
+  // and hide the blue aim-trace line so the viewport stays clean and immersive.
+  useEffect(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    eng.setCameraLocked(isMobile);
+    eng.setAimPreviewSuppressed(isMobile);
+  }, [isMobile]);
+
   useEffect(() => {
     const container = viewportRef.current;
     if (!container) return;
