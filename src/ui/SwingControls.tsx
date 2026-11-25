@@ -24,7 +24,7 @@ interface SwingControlsProps {
   onContinueHoled: () => void;
 }
 
-type SwingInputMode = 'three_click' | 'mouse_drag' | 'pro_sim';
+type SwingInputMode = 'three_click' | 'mouse_drag' | 'pro_sim' | 'swipe_pull';
 
 export const SwingControls: React.FC<SwingControlsProps> = ({
   snap,
@@ -35,7 +35,9 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
   onStopReplay,
   onContinueHoled,
 }) => {
-  const [mode, setMode] = useState<SwingInputMode>('three_click');
+  const isMobile = useIsMobile();
+  // Mobile defaults to the full-screen swipe pull-angle gesture
+  const [mode, setMode] = useState<SwingInputMode>(isMobile ? 'swipe_pull' : 'three_click');
   const [showProDrawer, setShowProDrawer] = useState(false);
   const [shotType, setShotType] = useState<ShotTypeId>('full');
 
@@ -61,9 +63,17 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
   const [dragPathTilt, setDragPathTilt] = useState(0);
   const dragStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
+  // Full-screen Swipe Pull-Angle Swing State (mobile default)
+  const [swipePull, setSwipePull] = useState<{
+    startX: number;
+    startY: number;
+    dx: number;
+    dy: number;
+    maxPullPx: number;
+  } | null>(null);
+
   const isReady = snap.playState === 'ready';
   const isPutting = snap.selectedClub.category === 'putter';
-  const isMobile = useIsMobile();
 
   // Auto-suggest putting power based on pin distance
   const distM = snap.distanceToPinYds * 0.9144;
@@ -261,6 +271,84 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     });
   };
 
+  // Swing mode tabs (Swipe is the mobile-first full-screen gesture)
+  const MODE_TABS: Array<{ id: SwingInputMode; label: string }> = isMobile
+    ? [
+        { id: 'swipe_pull', label: 'Swipe' },
+        { id: 'three_click', label: '3-Click' },
+        { id: 'mouse_drag', label: 'Drag' },
+        { id: 'pro_sim', label: 'Pro Sim' },
+      ]
+    : [
+        { id: 'three_click', label: '3-Click' },
+        { id: 'mouse_drag', label: 'Drag Swing' },
+        { id: 'pro_sim', label: 'Pro Sim' },
+      ];
+
+  // Swipe pull-angle derived values: pull DOWN for power, pull at an ANGLE to shape the
+  // shot (down-right = in-out path = draw, down-left = out-in = fade).
+  let swipePowerRatio = 0;
+  let swipePathDeltaDeg = 0;
+  if (swipePull) {
+    const pull = Math.max(0, swipePull.dy);
+    swipePowerRatio = Math.min(1.06, pull / swipePull.maxPullPx);
+    const angleDeg = Math.max(
+      -40,
+      Math.min(40, (Math.atan2(swipePull.dx, Math.max(30, swipePull.dy)) * 180) / Math.PI)
+    );
+    swipePathDeltaDeg = (angleDeg / 40) * 6;
+  }
+  const swipeShape =
+    Math.abs(swipePathDeltaDeg) < 0.8 ? 'Straight' : swipePathDeltaDeg > 0 ? 'Draw' : 'Fade';
+  const swipeColor =
+    swipePowerRatio > 0.85 ? '#fbbf24' : swipePowerRatio > 0.5 ? '#34d399' : '#38bdf8';
+
+  // Full-screen Swipe Pull-Angle handlers (mobile)
+  const handleSwipePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (mode !== 'swipe_pull' || !isReady) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setSwipePull({
+      startX: e.clientX,
+      startY: e.clientY,
+      dx: 0,
+      dy: 0,
+      maxPullPx: Math.max(170, window.innerHeight * 0.34),
+    });
+  };
+
+  const handleSwipePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    setSwipePull((cur) =>
+      cur ? { ...cur, dx: e.clientX - cur.startX, dy: e.clientY - cur.startY } : cur
+    );
+  };
+
+  const handleSwipePointerUp = () => {
+    if (!swipePull) return;
+    const { dx, dy, maxPullPx } = swipePull;
+    setSwipePull(null);
+    const pull = Math.max(0, dy);
+    if (pull < 22 || !isReady) return; // tiny tap = cancel, never fire accidental shots
+    const powerRatio = Math.max(0.08, Math.min(1.06, pull / maxPullPx));
+    const angleDeg = Math.max(-40, Math.min(40, (Math.atan2(dx, Math.max(30, dy)) * 180) / Math.PI));
+    const pathDeltaDeg = (angleDeg / 40) * 6;
+    onExecuteShot({
+      powerRatio,
+      clubPathDeg: clubPathDeg + pathDeltaDeg,
+      faceAngleDeg: faceAngleDeg + pathDeltaDeg * 0.45,
+      attackAngleDeltaDeg,
+      dynamicLoftDeltaDeg,
+      strikeOffsetXMm,
+      strikeOffsetYMm,
+    });
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(12);
+      } catch {
+        /* haptics unsupported */
+      }
+    }
+  };
+
   const faceToPath = faceAngleDeg - clubPathDeg;
   const shapeLabel =
     Math.abs(faceToPath) < 1.0 && Math.abs(faceAngleDeg) < 1.2
@@ -366,7 +454,90 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-3 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-2">
+    <>
+      {/* Full-screen swipe pull-angle gesture layer (mobile default swing input).
+          Sits below every HUD element (z-10) so chips, dock & drawer stay tappable. */}
+      {mode === 'swipe_pull' && (
+        <div
+          className="pointer-events-auto fixed inset-0 z-10 touch-none select-none"
+          onPointerDown={handleSwipePointerDown}
+          onPointerMove={handleSwipePointerMove}
+          onPointerUp={handleSwipePointerUp}
+          onPointerCancel={handleSwipePointerUp}
+        />
+      )}
+
+      {/* Swipe pull live feedback overlay */}
+      {mode === 'swipe_pull' && swipePull && (
+        <div className="pointer-events-none fixed inset-0 z-30">
+          <svg className="absolute inset-0 h-full w-full">
+            {/* straight-down reference guide */}
+            <line
+              x1={swipePull.startX}
+              y1={swipePull.startY}
+              x2={swipePull.startX}
+              y2={swipePull.startY + swipePull.maxPullPx}
+              stroke="rgba(255,255,255,0.18)"
+              strokeDasharray="4 6"
+              strokeWidth={2}
+            />
+            <line
+              x1={swipePull.startX}
+              y1={swipePull.startY}
+              x2={swipePull.startX + swipePull.dx}
+              y2={swipePull.startY + swipePull.dy}
+              stroke={swipeColor}
+              strokeWidth={3.5}
+              strokeLinecap="round"
+            />
+            <circle
+              cx={swipePull.startX}
+              cy={swipePull.startY}
+              r={20 + swipePowerRatio * 26}
+              fill="none"
+              stroke={swipeColor}
+              strokeWidth={3}
+              opacity={0.9}
+            />
+            <circle
+              cx={swipePull.startX + swipePull.dx}
+              cy={swipePull.startY + swipePull.dy}
+              r={10}
+              fill={swipeColor}
+              opacity={0.9}
+            />
+          </svg>
+          <div className="absolute inset-x-0 bottom-28 flex justify-center">
+            <div className="hud-glass flex items-center gap-3 rounded-full px-4 py-1.5 text-xs font-bold text-white shadow-2xl">
+              <span className="tabular-nums text-emerald-300">
+                Power {Math.round(swipePowerRatio * 100)}%
+              </span>
+              <span className="text-slate-500">·</span>
+              <span
+                className={
+                  swipeShape === 'Straight'
+                    ? 'text-white'
+                    : swipeShape === 'Draw'
+                      ? 'text-sky-300'
+                      : 'text-amber-300'
+                }
+              >
+                {swipeShape}
+              </span>
+              {isPutting && (
+                <>
+                  <span className="text-slate-500">·</span>
+                  <span className="text-[10px] font-semibold text-slate-400">
+                    target ~{suggestedPuttPct}%
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="pointer-events-none fixed bottom-3 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-2">
       {snap.shotEventLabel && (
         <div className="rounded-full border border-amber-400/40 bg-slate-900/90 px-4 py-1 text-xs font-extrabold tracking-wide text-amber-300 shadow-lg backdrop-blur">
           {snap.shotEventLabel}
@@ -547,13 +718,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
         {showProDrawer && mode !== 'pro_sim' && (
           <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
             <div className="flex items-center gap-1 rounded-xl bg-white/5 p-0.5">
-              {(
-                [
-                  { id: 'three_click', label: '3-Click' },
-                  { id: 'mouse_drag', label: 'Drag Swing' },
-                  { id: 'pro_sim', label: 'Pro Sim' },
-                ] as const
-              ).map((m) => (
+              {MODE_TABS.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => {
@@ -570,20 +735,16 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
                 </button>
               ))}
             </div>
-            <span className="text-[10px] text-slate-400">Spacebar / Click to Hit</span>
+            {!isMobile && (
+              <span className="text-[10px] text-slate-400">Spacebar / Click to Hit</span>
+            )}
           </div>
         )}
 
         {mode === 'pro_sim' && (
           <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
             <div className="flex items-center gap-1 rounded-xl bg-white/5 p-0.5">
-              {(
-                [
-                  { id: 'three_click', label: '3-Click' },
-                  { id: 'mouse_drag', label: 'Drag Swing' },
-                  { id: 'pro_sim', label: 'Pro Sim' },
-                ] as const
-              ).map((m) => (
+              {MODE_TABS.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => {
@@ -795,7 +956,52 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
             </button>
           </div>
         )}
+
+        {mode === 'swipe_pull' && (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <button
+                disabled={!isReady}
+                onClick={() => onAdjustAim(-0.035)}
+                title="Aim Left"
+                className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+              <span className="px-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Aim
+              </span>
+              <button
+                disabled={!isReady}
+                onClick={() => onAdjustAim(0.035)}
+                title="Aim Right"
+                className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5 rounded-xl border border-dashed border-emerald-400/40 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-200">
+              <Crosshair className="h-3.5 w-3.5 shrink-0" />
+              {isReady ? 'Pull back on the course to swing' : 'Ball away...'}
+            </div>
+            <button
+              onClick={() => setShowProDrawer((v) => !v)}
+              className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                showProDrawer
+                  ? 'bg-amber-400/20 text-amber-300 ring-1 ring-amber-400/40'
+                  : 'bg-white/5 text-slate-300 hover:bg-white/15'
+              }`}
+              title="Swing Mode & Shot Shaping"
+            >
+              {!isMobile && <span>Controls</span>}
+              <ChevronUp
+                className={`h-3 w-3 transition-transform ${showProDrawer ? 'rotate-180' : ''}`}
+              />
+            </button>
+          </div>
+        )}
       </div>
     </div>
+    </>
   );
 };
