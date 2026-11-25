@@ -138,7 +138,7 @@ export class GolfEngine {
   public showAimPreview = true;
   public foliageDensity: FoliageDensity = 'high';
   public difficulty: DifficultyMode = 'pro';
-  public qualityLevel: GraphicsQuality = 'ultra';
+  public qualityLevel: GraphicsQuality = 'high';
   public autoQualityEnabled = true;
 
   // Active shot simulation state
@@ -205,7 +205,10 @@ export class GolfEngine {
 
   private clock = new THREE.Clock();
   private elapsedTimeS = 0;
+  private smoothDtS = 1 / 60;
   private physicsAccumS = 0;
+  private reflectionAccumS = 0;
+  private lastBuiltTracerLen = 0;
   private prevBallPos: Vec3 = { x: 0, y: 20, z: 0 };
   private renderBallPos: Vec3 = { x: 0, y: 20, z: 0 };
   private rafId: number | null = null;
@@ -246,6 +249,10 @@ export class GolfEngine {
     this.postProc = new PostProcessingPipeline(this.renderer, this.scene, this.cameraSys.camera, w, h);
 
     this.loadHole(COURSE_HOLES[0].id);
+    // Apply the default quality preset (HIGH) consistently: pixel ratio, shadow resolution,
+    // post-processing features and foliage density. ULTRA remains available in settings and
+    // the auto-scaler can still step down further on weak GPUs.
+    this.setGraphicsQuality(this.qualityLevel);
 
     window.addEventListener('resize', this.handleResize);
     this.startLoop();
@@ -827,6 +834,7 @@ export class GolfEngine {
     this.pinHitNotified = false;
     this.lipOutNotified = false;
     this.liveTracerPoints = [{ ...this.ballPos }];
+    this.lastBuiltTracerLen = 0;
     this.activeReplayFrames = [{ t: 0, pos: { ...this.ballPos }, omega: { ...launch.initialOmega } }];
 
     // Impact audio, turf divot decals & particles!
@@ -921,10 +929,21 @@ export class GolfEngine {
           }
         }
 
-        const surfaceY = this.sampler.getHeight(this.ballPos.x, this.ballPos.z) + BALL_RADIUS_M;
-        if (this.ballPos.y <= surfaceY) {
+        const terrainY = this.sampler.getHeight(this.ballPos.x, this.ballPos.z);
+        const surfaceY = terrainY + BALL_RADIUS_M;
+        let touchedDown = this.ballPos.y <= surfaceY;
+        let splashedAtSeaPlane = false;
+        // Over the ocean the visible surface is the y=0 water plane, not the seabed ~4.5m
+        // below — splash there so the ball never visibly sinks through the water surface.
+        if (!touchedDown && this.ballPos.y <= BALL_RADIUS_M + 0.02) {
+          if (this.sampler.getSurface(this.ballPos.x, this.ballPos.z) === 'water') {
+            touchedDown = true;
+            splashedAtSeaPlane = true;
+          }
+        }
+        if (touchedDown) {
           const surf = this.sampler.getSurface(this.ballPos.x, this.ballPos.z);
-          this.ballPos.y = surfaceY;
+          this.ballPos.y = splashedAtSeaPlane ? BALL_RADIUS_M * 0.4 : surfaceY;
           const n = this.sampler.getNormal(this.ballPos.x, this.ballPos.z);
 
           if (!this.hasLanded) {
@@ -937,7 +956,7 @@ export class GolfEngine {
             }
           }
 
-          if (surf === 'water' || this.ballPos.y <= BALL_RADIUS_M + 0.05) {
+          if (splashedAtSeaPlane || surf === 'water' || this.ballPos.y <= BALL_RADIUS_M + 0.05) {
             this.handleWaterHazard();
             break;
           }
@@ -1030,14 +1049,13 @@ export class GolfEngine {
       }
     }
 
-    // Record tracer & replay keyframes at frame cadence
+    // Record tracer & replay keyframes at physics cadence (visual rebuild happens once per frame)
     const lastPt = this.liveTracerPoints[this.liveTracerPoints.length - 1];
     if (
       !lastPt ||
       Math.hypot(this.ballPos.x - lastPt.x, this.ballPos.y - lastPt.y, this.ballPos.z - lastPt.z) > 0.25
     ) {
       this.liveTracerPoints.push({ ...this.ballPos });
-      this.visualAids.updateLiveTracer(this.liveTracerPoints, true);
     }
     this.activeReplayFrames.push({
       t: this.simTimeS,
@@ -1212,7 +1230,12 @@ export class GolfEngine {
       if (this.disposed) return;
       this.rafId = requestAnimationFrame(tick);
 
-      const dt = Math.min(0.05, this.clock.getDelta());
+      const rawDt = Math.min(0.05, this.clock.getDelta());
+      // Low-pass the frame timestep so irregular frame pacing (GC pauses, shader warm-up,
+      // heavy GPU load) never reads as a sudden ball speed change mid-flight. The clamp
+      // keeps the smoothed value tethered to reality (max ~±60% deviation, fast recovery).
+      this.smoothDtS += (rawDt - this.smoothDtS) * (1 - Math.exp(-7.0 * Math.max(1e-3, rawDt)));
+      const dt = THREE.MathUtils.clamp(this.smoothDtS, rawDt * 0.55, Math.min(0.05, rawDt * 1.75));
       this.elapsedTimeS += dt;
 
       // Clear transient shot event banner timer
@@ -1230,13 +1253,13 @@ export class GolfEngine {
         this.audio.playGullCall();
       }
 
-      // Auto frame-time quality scaler (< 22 FPS sustained for 4s steps down gracefully)
+      // Auto frame-time quality scaler (< ~24 FPS sustained for 2.5s steps down gracefully)
       if (this.autoQualityEnabled && !document.hidden && this.qualityLevel !== 'medium') {
-        this.fpsWindowS += dt;
+        this.fpsWindowS += rawDt;
         this.fpsFrames++;
-        if (this.fpsWindowS >= 4.0) {
+        if (this.fpsWindowS >= 2.5) {
           const avgFrameMs = (this.fpsWindowS / Math.max(1, this.fpsFrames)) * 1000;
-          if (avgFrameMs > 46) {
+          if (avgFrameMs > 42) {
             const nextQ: GraphicsQuality = this.qualityLevel === 'ultra' ? 'high' : 'medium';
             this.setGraphicsQuality(nextQ);
             this.autoQualityNote = `Auto-tuned graphics to ${nextQ.toUpperCase()} for smoother FPS`;
@@ -1421,6 +1444,16 @@ export class GolfEngine {
         );
       }
 
+      // Rebuild the pro-tracer ribbon at most once per rendered frame (rebuilding the geometry
+      // per physics substep caused GC churn and frame-time spikes exactly while the ball flew)
+      if (
+        this.playState === 'ball_in_motion' &&
+        this.liveTracerPoints.length !== this.lastBuiltTracerLen
+      ) {
+        this.lastBuiltTracerLen = this.liveTracerPoints.length;
+        this.visualAids.updateLiveTracer(this.liveTracerPoints, true);
+      }
+
       // Attach CSM to async-loaded golfer GLB or newly switched club models automatically
       if (this.modelsSys.golferMeshVersion !== this.lastGolferMeshVersion) {
         this.skySys.applyCSMToScene(this.modelsSys.golferGroup);
@@ -1475,8 +1508,15 @@ export class GolfEngine {
             ? this.sampler.cupPosition
             : activeBallPos;
       const fastFlight =
-        this.playState === 'ball_in_motion' && Math.hypot(this.ballVel.x, this.ballVel.z) > 14;
-      this.foliageSys.updateHeroTurfAround(grassFocus.x, grassFocus.z, false, fastFlight ? 1 : 2);
+        this.playState === 'ball_in_motion' &&
+        this.simMode === 'flight' &&
+        Math.hypot(this.ballVel.x, this.ballVel.z) > 12;
+      // Pause hero-grass streaming during fast flight: each chunk build costs several ms of
+      // main-thread work, and a mid-flight hitch reads as ball jitter. The landing area is
+      // rebuilt immediately (immediate=true) when the next shot is prepared.
+      if (!fastFlight) {
+        this.foliageSys.updateHeroTurfAround(grassFocus.x, grassFocus.z, false, 2);
+      }
 
       // Keep shadow frustum tight when zoomed on ball/green, wide when tracking flight
       if (this.playState === 'ball_in_motion' || this.playState === 'replaying') {
@@ -1523,10 +1563,16 @@ export class GolfEngine {
         this.playState !== 'ball_in_motion'
           ? 0.85
           : 0.0;
-      this.oceanSys.updatePlanarReflection(this.renderer, this.cameraSys.camera, [
-        ...this.foliageSys.getTransientGrassObjects(),
-        ...this.visualAids.getObjects(),
-      ]);
+      // Planar water reflection is a full extra scene render — capping it to 30 Hz is visually
+      // indistinguishable on moving water and removes a huge per-frame cost spike source.
+      this.reflectionAccumS += dt;
+      if (this.reflectionAccumS >= 1 / 30) {
+        this.reflectionAccumS %= 1 / 30;
+        this.oceanSys.updatePlanarReflection(this.renderer, this.cameraSys.camera, [
+          ...this.foliageSys.getTransientGrassObjects(),
+          ...this.visualAids.getObjects(),
+        ]);
+      }
       this.postProc.updateSun(this.skySys.sunDirection, this.skySys.sunLight.color);
       this.postProc.updateCameraLens(dt, focusDist, dofStrength, this.skySys.sunDirection.y);
       this.postProc.render();

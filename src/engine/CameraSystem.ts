@@ -20,6 +20,7 @@ export class CameraSystem {
   private smoothFollowDir = new THREE.Vector2(0, -1);
   private smoothFollowAlt = 0;
   private smoothFollowCamY = 0;
+  private smoothCamGroundY = 0;
   private followTrackInit = false;
 
   // Golfer-locked 360° look-around orbit & zoom state in 'address' mode
@@ -324,14 +325,22 @@ export class CameraSystem {
       const camX = ballPos.x - dirX * followDist;
       const camZ = ballPos.z - dirZ * followDist;
       const camGround = sampler.getHeight(camX, camZ);
-      const rawCamY = Math.max(camGround + 1.15, ballPos.y + followHeight);
+      // Low-pass the ground height beneath the camera: sudden terrain rises (bunker brows,
+      // cliff edges, mounds) previously entered the clamp below instantly and popped the
+      // camera up in a single frame, which read as ball jitter against the sky.
+      if (!this.followTrackInit) {
+        this.smoothCamGroundY = camGround;
+      } else {
+        this.smoothCamGroundY += (camGround - this.smoothCamGroundY) * (1 - Math.exp(-7.5 * dt));
+      }
+      const rawCamY = Math.max(this.smoothCamGroundY + 1.15, ballPos.y + followHeight);
       if (!this.followTrackInit) {
         this.smoothFollowCamY = rawCamY;
         this.followTrackInit = true;
       } else {
         // Keep terrain floor constraint hard while damping upward/downward camera height smoothly
         const dampY = this.smoothFollowCamY + (rawCamY - this.smoothFollowCamY) * (1 - Math.exp(-10.0 * dt));
-        this.smoothFollowCamY = Math.max(camGround + 1.05, dampY);
+        this.smoothFollowCamY = Math.max(this.smoothCamGroundY + 1.05, dampY);
       }
 
       this.desiredPos.set(camX, this.smoothFollowCamY, camZ);
