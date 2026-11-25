@@ -14,11 +14,13 @@ import {
 import { submitLeaderboardEntry } from './storage/supabaseSync';
 import { ClubSelector } from './ui/ClubSelector';
 import { Minimap } from './ui/Minimap';
+import { MobileHud } from './ui/MobileHud';
 import { ScorecardModal } from './ui/ScorecardModal';
 import { SettingsModal } from './ui/SettingsModal';
 import { SwingControls } from './ui/SwingControls';
 import { TelemetryPanel } from './ui/TelemetryPanel';
 import { TopBar } from './ui/TopBar';
+import { useIsMobile } from './ui/useIsMobile';
 
 export const App: React.FC = () => {
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -40,6 +42,7 @@ export const App: React.FC = () => {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [aimPreviewEnabled, setAimPreviewEnabled] = useState(true);
   const [proTracerEnabled, setProTracerEnabled] = useState(true);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     const container = viewportRef.current;
@@ -160,37 +163,62 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-slate-950">
+    <div className="relative h-dvh w-screen overflow-hidden bg-slate-950">
       {/* Live 3D WebGL Viewport */}
       <div ref={viewportRef} className="absolute inset-0 h-full w-full" />
 
       {snap && (
         <>
-          <TopBar
-            snap={snap}
-            roundScores={roundScores}
-            onSelectHole={(id) => engineRef.current?.loadHole(id)}
-            onCameraMode={(m) => engineRef.current?.setCameraMode(m)}
-            onDifficulty={(d) => engineRef.current?.setDifficulty(d)}
-            onToggleGreenGrid={() =>
-              engineRef.current?.setGreenGridVisible(!snap.greenGridVisible)
-            }
-            onToggleFlagstick={() => engineRef.current?.toggleFlagstick()}
-            onMulligan={() => engineRef.current?.takeMulligan()}
-            onUnplayableDrop={() => engineRef.current?.takeUnplayableDrop()}
-            onReplayShot={() => engineRef.current?.replayLastShot()}
-            onStopReplay={() => engineRef.current?.stopReplay()}
-            onResetTee={() => engineRef.current?.resetToTee()}
-            onOpenScorecard={() => setScorecardOpen(true)}
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
+          {isMobile ? (
+            /* Immersive mobile HUD: minimal viewport, everything under icon side menu */
+            <MobileHud
+              snap={snap}
+              roundScores={roundScores}
+              onSelectHole={(id) => engineRef.current?.loadHole(id)}
+              onCameraMode={(m) => engineRef.current?.setCameraMode(m)}
+              onDifficulty={(d) => engineRef.current?.setDifficulty(d)}
+              onToggleGreenGrid={() =>
+                engineRef.current?.setGreenGridVisible(!snap.greenGridVisible)
+              }
+              onToggleFlagstick={() => engineRef.current?.toggleFlagstick()}
+              onMulligan={() => engineRef.current?.takeMulligan()}
+              onUnplayableDrop={() => engineRef.current?.takeUnplayableDrop()}
+              onReplayShot={() => engineRef.current?.replayLastShot()}
+              onStopReplay={() => engineRef.current?.stopReplay()}
+              onResetTee={() => engineRef.current?.resetToTee()}
+              onOpenScorecard={() => setScorecardOpen(true)}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onAimWorld={(x, z) => engineRef.current?.setAimTowardsWorld(x, z)}
+            />
+          ) : (
+            <>
+              <TopBar
+                snap={snap}
+                roundScores={roundScores}
+                onSelectHole={(id) => engineRef.current?.loadHole(id)}
+                onCameraMode={(m) => engineRef.current?.setCameraMode(m)}
+                onDifficulty={(d) => engineRef.current?.setDifficulty(d)}
+                onToggleGreenGrid={() =>
+                  engineRef.current?.setGreenGridVisible(!snap.greenGridVisible)
+                }
+                onToggleFlagstick={() => engineRef.current?.toggleFlagstick()}
+                onMulligan={() => engineRef.current?.takeMulligan()}
+                onUnplayableDrop={() => engineRef.current?.takeUnplayableDrop()}
+                onReplayShot={() => engineRef.current?.replayLastShot()}
+                onStopReplay={() => engineRef.current?.stopReplay()}
+                onResetTee={() => engineRef.current?.resetToTee()}
+                onOpenScorecard={() => setScorecardOpen(true)}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
 
-          <TelemetryPanel snap={snap} />
+              <TelemetryPanel snap={snap} />
 
-          <Minimap
-            snap={snap}
-            onAimWorld={(x, z) => engineRef.current?.setAimTowardsWorld(x, z)}
-          />
+              <Minimap
+                snap={snap}
+                onAimWorld={(x, z) => engineRef.current?.setAimTowardsWorld(x, z)}
+              />
+            </>
+          )}
 
           <SwingControls
             snap={snap}
@@ -209,24 +237,25 @@ export const App: React.FC = () => {
             onSelectClub={(id) => engineRef.current?.setClub(id)}
           />
 
-          {/* Camera Controls, Golfer-Locked Orbit Reset & Auto-FPS Note */}
-          {snap.cameraMode === 'scout' ? (
-            <div className="pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/75 px-3 py-1 text-[11px] text-sky-200 border border-sky-400/30 backdrop-blur">
-              Drag to orbit · Right-drag to pan · Scroll to zoom
-            </div>
-          ) : snap.cameraMode === 'address' && snap.cameraOrbited ? (
-            <button
-              onClick={() => engineRef.current?.resetCameraOrbit()}
-              className="fixed top-14 right-3 z-20 rounded-full bg-slate-900/85 hover:bg-slate-800 px-3 py-1 text-[11px] font-medium text-emerald-200 border border-emerald-400/40 backdrop-blur shadow-lg transition cursor-pointer"
-              title="Reset view behind golfer (or double-click / press C)"
-            >
-              Reset View (C)
-            </button>
-          ) : snap.autoQualityNote ? (
-            <div className="pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/75 px-3 py-1 text-[10px] text-amber-200 border border-amber-400/30 backdrop-blur">
-              {snap.autoQualityNote}
-            </div>
-          ) : null}
+          {/* Camera Controls, Golfer-Locked Orbit Reset & Auto-FPS Note (desktop — mobile shows hints in the side menu) */}
+          {!isMobile &&
+            (snap.cameraMode === 'scout' ? (
+              <div className="pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/75 px-3 py-1 text-[11px] text-sky-200 border border-sky-400/30 backdrop-blur">
+                Drag to orbit · Right-drag to pan · Scroll to zoom
+              </div>
+            ) : snap.cameraMode === 'address' && snap.cameraOrbited ? (
+              <button
+                onClick={() => engineRef.current?.resetCameraOrbit()}
+                className="fixed top-14 right-3 z-20 rounded-full bg-slate-900/85 hover:bg-slate-800 px-3 py-1 text-[11px] font-medium text-emerald-200 border border-emerald-400/40 backdrop-blur shadow-lg transition cursor-pointer"
+                title="Reset view behind golfer (or double-click / press C)"
+              >
+                Reset View (C)
+              </button>
+            ) : snap.autoQualityNote ? (
+              <div className="pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/75 px-3 py-1 text-[10px] text-amber-200 border border-amber-400/30 backdrop-blur">
+                {snap.autoQualityNote}
+              </div>
+            ) : null)}
 
           <ScorecardModal
             open={scorecardOpen}

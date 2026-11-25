@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ChevronUp, Crosshair, Film, Play, Sliders, RotateCw, RotateCcw, Square } from 'lucide-react';
 import type { EngineSnapshot } from '../engine/GolfEngine';
 import { SHOT_TYPE_PRESETS, type ShotTypeId } from '../physics/clubs';
+import { useIsMobile } from './useIsMobile';
 
 export interface ShotExecutionInput {
   powerRatio: number;
@@ -62,6 +63,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
 
   const isReady = snap.playState === 'ready';
   const isPutting = snap.selectedClub.category === 'putter';
+  const isMobile = useIsMobile();
 
   // Auto-suggest putting power based on pin distance
   const distM = snap.distanceToPinYds * 0.9144;
@@ -525,7 +527,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
       {/* Main Swing Controller Dock — compact pill bar when idle, expanding seamlessly when clicked or swinging */}
       <div className="pointer-events-auto hud-glass flex flex-col gap-1.5 rounded-2xl px-3 py-2 max-w-[92vw]">
         {!isPutting && isReady && (
-          <div className="flex items-center justify-center gap-1 border-b border-white/10 pb-1.5">
+          <div className="flex flex-wrap items-center justify-center gap-1 border-b border-white/10 pb-1.5">
             {SHOT_TYPE_PRESETS.map((st) => (
               <button
                 key={st.id}
@@ -604,30 +606,34 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
         {/* Slim Action Row */}
         {mode === 'three_click' && (
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1">
-              <button
-                disabled={!isReady}
-                onClick={() => onAdjustAim(-0.035)}
-                title="Aim Left (A / Left Arrow)"
-                className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-              </button>
-              <span className="px-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Aim
-              </span>
-              <button
-                disabled={!isReady}
-                onClick={() => onAdjustAim(0.035)}
-                title="Aim Right (D / Right Arrow)"
-                className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-              </button>
-            </div>
+            {!(isMobile && clickStage !== 'idle') && (
+              <div className="flex items-center gap-1">
+                <button
+                  disabled={!isReady}
+                  onClick={() => onAdjustAim(-0.035)}
+                  title="Aim Left (A / Left Arrow)"
+                  className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </button>
+                <span className="px-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Aim
+                </span>
+                <button
+                  disabled={!isReady}
+                  onClick={() => onAdjustAim(0.035)}
+                  title="Aim Right (D / Right Arrow)"
+                  className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/15 disabled:opacity-40"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
 
             {clickStage !== 'idle' && (
-              <div className="relative h-8 w-52 sm:w-64 overflow-hidden rounded-xl border border-white/15 bg-slate-950/80">
+              <div
+                className={`relative h-8 ${isMobile ? 'w-40' : 'w-52 sm:w-64'} overflow-hidden rounded-xl border border-white/15 bg-slate-950/80`}
+              >
                 <div
                   className="absolute inset-y-0 bg-emerald-500/30 border-x border-emerald-400/60"
                   style={{ left: '10%', width: '10%' }}
@@ -680,20 +686,22 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
                   : 'Strike!'}
             </button>
 
-            <button
-              onClick={() => setShowProDrawer((v) => !v)}
-              className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-semibold transition ${
-                showProDrawer
-                  ? 'bg-amber-400/20 text-amber-300 ring-1 ring-amber-400/40'
-                  : 'bg-white/5 text-slate-300 hover:bg-white/15'
-              }`}
-              title="Swing Mode & Shot Shaping"
-            >
-              <span>Controls</span>
-              <ChevronUp
-                className={`h-3 w-3 transition-transform ${showProDrawer ? 'rotate-180' : ''}`}
-              />
-            </button>
+            {!(isMobile && clickStage !== 'idle') && (
+              <button
+                onClick={() => setShowProDrawer((v) => !v)}
+                className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                  showProDrawer
+                    ? 'bg-amber-400/20 text-amber-300 ring-1 ring-amber-400/40'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/15'
+                }`}
+                title="Swing Mode & Shot Shaping"
+              >
+                {!isMobile && <span>Controls</span>}
+                <ChevronUp
+                  className={`h-3 w-3 transition-transform ${showProDrawer ? 'rotate-180' : ''}`}
+                />
+              </button>
+            )}
           </div>
         )}
 
@@ -720,7 +728,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
               onPointerMove={handleDragPointerMove}
               onPointerUp={handleDragPointerUp}
               onPointerCancel={handleDragPointerUp}
-              className={`relative flex h-10 w-64 cursor-grab items-center justify-between rounded-xl border px-3 transition select-none touch-none ${
+              className={`relative flex h-10 ${isMobile ? 'w-44' : 'w-64'} cursor-grab items-center justify-between rounded-xl border px-3 transition select-none touch-none ${
                 dragActive
                   ? 'cursor-grabbing border-emerald-400 bg-emerald-500/20'
                   : 'border-white/15 bg-slate-900/70 hover:border-sky-400/40'
@@ -751,7 +759,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
                   : 'bg-white/5 text-slate-300 hover:bg-white/15'
               }`}
             >
-              <span>Controls</span>
+              {!isMobile && <span>Controls</span>}
               <ChevronUp
                 className={`h-3 w-3 transition-transform ${showProDrawer ? 'rotate-180' : ''}`}
               />

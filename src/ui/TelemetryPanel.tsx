@@ -4,15 +4,20 @@ import type { EngineSnapshot } from '../engine/GolfEngine';
 
 interface TelemetryPanelProps {
   snap: EngineSnapshot;
+  /** Render un-positioned (full width) so the panel can live inside the mobile side drawer. */
+  inline?: boolean;
 }
 
-export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({ snap }) => {
+export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({ snap, inline = false }) => {
   const [open, setOpen] = useState(false);
   const { liveBallStats, lastTelemetry } = snap;
+  const rootCls = inline
+    ? 'pointer-events-auto flex w-full flex-col items-stretch'
+    : 'pointer-events-auto fixed top-14 left-3 z-20 flex flex-col items-start';
 
   if (liveBallStats) {
     return (
-      <div className="pointer-events-auto fixed top-14 left-3 z-20 flex flex-col items-start">
+      <div className={rootCls}>
         <button
           onClick={() => setOpen((v) => !v)}
           className="hud-glass flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-bold text-sky-300 transition hover:border-sky-400/50"
@@ -27,7 +32,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({ snap }) => {
         </button>
 
         {open && (
-          <div className="hud-glass mt-1.5 w-60 rounded-2xl p-3">
+          <div className={`hud-glass mt-1.5 ${inline ? 'w-full' : 'w-60'} rounded-2xl p-3`}>
             <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-sky-300">
               <Activity className="h-3.5 w-3.5 animate-pulse" />
               <span>Live Flight Radar</span>
@@ -71,7 +76,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({ snap }) => {
         : `${Math.abs(lastTelemetry.curveOfflineYds).toFixed(1)}y L`;
 
   return (
-    <div className="pointer-events-auto fixed top-14 left-3 z-20 flex flex-col items-start">
+    <div className={rootCls}>
       <button
         onClick={() => setOpen((v) => !v)}
         className={`hud-glass flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold text-white transition hover:border-sky-400/50 ${
@@ -88,7 +93,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({ snap }) => {
       </button>
 
       {open && (
-        <div className="hud-glass mt-1.5 w-64 rounded-2xl p-3 shadow-2xl">
+        <div className={`hud-glass mt-1.5 ${inline ? 'w-full' : 'w-64'} rounded-2xl p-3 shadow-2xl`}>
           {snap.hole.isDrivingRange && snap.rangeStats.shots > 0 && (
             <div className="mb-2.5 rounded-xl border border-sky-400/20 bg-sky-500/10 p-2">
               <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-sky-300">
