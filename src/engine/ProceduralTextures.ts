@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 
 function hash2(x: number, y: number, seed = 17): number {
   let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 1442695041);
@@ -85,6 +86,26 @@ function heightBufferToNormalTexture(
   return tex;
 }
 
+/**
+ * One texel of the coastal bark relief field, in [0,1].
+ *
+ * Exported so the tiling guarantee can be regression-tested: every coordinate handed to the
+ * periodic noise helpers must sweep an INTEGER number of periods across u,v in [0,1), or the
+ * 1024px map will not wrap and shows a hard seam line around the trunk. Vertical elongation
+ * therefore comes from lowering the period (an integer), never from scaling v — the previous
+ * bake used `v * 0.28` / `v * 0.45` / `u * 2.0` multipliers and had a measurable vertical seam.
+ */
+export function barkHeightAt(u: number, v: number): number {
+  // Twisting helical plate warp + deep crevices + long bark fibre
+  const warp = tileFbm(u, v, 6, 2, 907) * 0.14;
+  const plate = tileFbm(u + warp, v, 9, 3, 911);
+  // Crevice ridges come from the periodic noise helper (not raw sin) so the fractional warp
+  // offset cannot break the wrap.
+  const crevice = Math.pow(Math.abs(tileNoise(u + warp * 1.6, v, 9, 967) * 2 - 1), 0.85);
+  const fiber = tileNoise(u, v, 96, 929);
+  return Math.min(1, Math.max(0, plate * 0.58 * crevice + fiber * 0.24 + 0.14));
+}
+
 export interface CourseTextureSet {
   maxAnisotropy: number;
   ballAlbedo: THREE.CanvasTexture;
@@ -123,9 +144,11 @@ function makeRng(seed: number): () => number {
  *  - Carbon-fiber driver crown weave, human skin pore normal, and piqué knit fabric normal maps
  */
 export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
-  // 1. Golf Ball 336-Dimple Fibonacci Lattice Normal Map (512 x 256)
-  const bw = 512;
-  const bh = 256;
+  // 1. Golf Ball 336-Dimple Fibonacci Lattice Normal Map (1024 x 512)
+  //    ~1.8px per dimple rim at this size; the equirectangular UV warp stretches
+  //    the map toward the poles, so 512x256 left the dimple lips faceted.
+  const bw = 1024;
+  const bh = 512;
   const dimpleCount = 336;
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   const centers: Array<[number, number, number]> = [];
@@ -170,29 +193,33 @@ export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
 
   // Golf Ball Albedo with subtle Tour alignment side-stamp & warm pearl urethane tint
   const ballCanvas = document.createElement('canvas');
-  ballCanvas.width = 512;
-  ballCanvas.height = 256;
+  ballCanvas.width = bw;
+  ballCanvas.height = bh;
   const bctx = ballCanvas.getContext('2d')!;
   bctx.fillStyle = '#f8f8f4';
-  bctx.fillRect(0, 0, 512, 256);
-  // Subtle micro-speckle for pearl urethane finish
-  for (let i = 0; i < 1800; i++) {
-    const x = Math.random() * 512;
-    const y = Math.random() * 256;
+  bctx.fillRect(0, 0, bw, bh);
+  // Subtle micro-speckle for pearl urethane finish. Deterministic (seeded) so the
+  // ball renders identically on every reload instead of flickering between sessions.
+  const bRng = makeRng(20240617);
+  for (let i = 0; i < 7200; i++) {
+    const x = bRng() * bw;
+    const y = bRng() * bh;
     bctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(225,228,220,0.16)';
-    bctx.fillRect(x, y, 2, 2);
+    bctx.fillRect(x, y, bw / 256, bw / 256);
   }
-  // Tour alignment line + brand stamp
+  // Tour alignment line + brand stamp (positions scale with the map size)
+  const stampCx = bw * 0.5;
+  const stampCy = bh * 0.5;
   bctx.strokeStyle = '#1d3a2f';
-  bctx.lineWidth = 3;
+  bctx.lineWidth = bw / 170;
   bctx.beginPath();
-  bctx.moveTo(222, 128);
-  bctx.lineTo(290, 128);
+  bctx.moveTo(stampCx - bw * 0.066, stampCy);
+  bctx.lineTo(stampCx + bw * 0.066, stampCy);
   bctx.stroke();
   bctx.fillStyle = '#18242e';
-  bctx.font = 'bold 14px Georgia, serif';
+  bctx.font = `bold ${Math.round(bw / 36)}px Georgia, serif`;
   bctx.textAlign = 'center';
-  bctx.fillText('LINKS PRO', 256, 114);
+  bctx.fillText('LINKS PRO', stampCx, stampCy - bh * 0.055);
   const ballAlbedo = new THREE.CanvasTexture(ballCanvas);
   ballAlbedo.colorSpace = THREE.SRGBColorSpace;
   ballAlbedo.anisotropy = maxAnisotropy;
@@ -437,13 +464,8 @@ export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
     const v = y / bkW;
     for (let x = 0; x < bkW; x++) {
       const u = x / bkW;
-      // Twisting helical vertical bark plates + deep dark crevices + weathered coastal sage lichen specks
-      const warp = tileFbm(u, v * 0.5, 6, 2, 907) * 0.14;
-      const plate = tileFbm(u + warp, v * 0.28, 18, 3, 911);
-      const crevice = Math.pow(Math.abs(Math.sin((u + warp * 1.6) * Math.PI * 26)), 0.52);
-      const fiber = tileNoise(u * 2.0, v * 0.45, 96, 929);
       const lichenMask = Math.max(0, (tileFbm(u, v, 10, 2, 953) - 0.63) * 3.0);
-      const h = Math.min(1, Math.max(0, plate * 0.58 * crevice + fiber * 0.24 + 0.14));
+      const h = barkHeightAt(u, v);
       barkH[y * bkW + x] = h;
 
       // Full dynamic range: dark cinnamon-umber cracks (52) -> warm cedar mid-plates -> salt-bleached silver crests (216)
@@ -652,44 +674,106 @@ export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
 }
 
 /**
- * Photographic CC0 PBR ground textures (ambientCG, mirrored on GitHub) packed into two
- * 2048px quadrant atlases (lawn / rough / sand / rock) in public/textures/.
- * Atlasing keeps the terrain shader at ~13 fragment texture units — 8 separate samplers
- * exceeded the 16-unit WebGL limit once CSM shadow maps + IBL were counted, which made
- * the terrain program fail to link on many GPUs (ocean showed through instead).
+ * Photographic CC0 PBR ground textures (ambientCG) packed into two KTX2 quadrant atlases
+ * (lawn / rough / sand / rock) in public/textures/.
+ *
+ * Why KTX2 rather than the original baseline JPEGs:
+ *  - Normal maps are pure high-frequency vector data. JPEG's chroma subsampling and 8x8
+ *    DCT blocks put ringing + faceted shading into every cliff, bunker and fairway. The
+ *    Basis Universal codec is block-compressed on the GPU and keeps chroma intact.
+ *  - Pre-generated mipmaps mean no software mip pass, and each atlas is ~3x smaller on the
+ *    wire than the JPEGs it replaces.
+ *  - The spare alpha channels let per-material roughness and relief height ride along for
+ *    FREE. The terrain shader previously blew the 16-unit fragment limit with 8 separate
+ *    samplers, so packing is what makes the extra data affordable at all.
+ *
+ * Channel layout (see scripts/build-textures.sh):
+ *    colorAtlas : RGB = albedo,          A = reserved (opaque)
+ *    normalAtlas: RG  = normal.xy,       B = relief height, A = dampness (gloss)
+ *
  * Textures stream in async — callers fade their effect in via `set.loaded`.
  */
 export interface PhotoTextureSet {
   colorAtlas: THREE.Texture;
   normalAtlas: THREE.Texture;
+  /** True once both atlases transcoded and decoded on the GPU. */
   loaded: boolean;
+  /** True when KTX2/Basis is unsupported and the layer stays permanently disabled. */
+  unavailable: boolean;
+  dispose: () => void;
 }
 
+/** Where the Basis transcoder (JS + WASM) lives; copied from three's examples in build-textures.sh. */
+const BASIS_TRANSCODER_PATH = '/basis/';
+
 export function loadPhotoTextures(
+  renderer: THREE.WebGLRenderer,
   maxAnisotropy: number,
   onReady: (set: PhotoTextureSet) => void
 ): PhotoTextureSet {
+  const set: PhotoTextureSet = {
+    colorAtlas: null as unknown as THREE.Texture,
+    normalAtlas: null as unknown as THREE.Texture,
+    loaded: false,
+    unavailable: false,
+    dispose: () => {
+      set.colorAtlas?.dispose();
+      set.normalAtlas?.dispose();
+      loader?.dispose();
+    },
+  };
+
+  let loader: KTX2Loader | null = null;
+  try {
+    loader = new KTX2Loader()
+      .setTranscoderPath(BASIS_TRANSCODER_PATH)
+      .detectSupport(renderer);
+  } catch (err) {
+    console.warn('[PhotoTextures] KTX2 unsupported — photographic layer disabled', err);
+    set.unavailable = true;
+    return set;
+  }
+
   const manager = new THREE.LoadingManager();
-  const loader = new THREE.TextureLoader(manager);
-  const mk = (file: string, srgb: boolean): THREE.Texture => {
-    const t = loader.load(`/textures/${file}`);
+  const texLoader: KTX2Loader = loader;
+  // KTX2Loader inherits LoadingManager support from Loader, but its load() signature is
+  // CompressedTexture-only in @types/three; go through the base Loader typing.
+  const baseLoader = texLoader as unknown as THREE.Loader<THREE.Texture>;
+  baseLoader.manager = manager;
+
+  /**
+   * Loads one atlas asynchronously. Nothing is uploaded until the transcode finishes, so in
+   * the meantime the terrain shader keeps uPhotoStrength at 0 and its procedural layers carry
+   * the frame; setPhotoTextures() swaps in the real textures and fades the layer on.
+   */
+  const load = async (file: string, srgb: boolean): Promise<THREE.Texture> => {
+    const t = await texLoader.loadAsync(`/textures/${file}`);
     t.wrapS = THREE.RepeatWrapping;
     t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = maxAnisotropy;
+    // The albedo atlas is sRGB; the normal/height atlas must stay linear or the lighting
+    // maths skews. ETC1S KTX2 carries a colour-space hint, but be explicit.
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    t.needsUpdate = true;
     return t;
   };
-  const set: PhotoTextureSet = {
-    colorAtlas: mk('ground-color-atlas.jpg', true),
-    normalAtlas: mk('ground-normal-atlas.jpg', false),
-    loaded: false,
-  };
-  manager.onLoad = () => {
-    set.loaded = true;
-    onReady(set);
-  };
+
+  Promise.all([load('ground-color-atlas.ktx2', true), load('ground-normal-atlas.ktx2', false)])
+    .then(([colorAtlas, normalAtlas]) => {
+      set.colorAtlas = colorAtlas;
+      set.normalAtlas = normalAtlas;
+      set.loaded = true;
+      onReady(set);
+    })
+    .catch((err) => {
+      // Leave the photographic layer disabled on failure — the procedural fallback stays intact
+      console.warn('[PhotoTextures] failed to load atlases', err);
+      set.unavailable = true;
+    });
+
   manager.onError = (url) => {
-    // Leave photographic layer disabled on failure — procedural fallback stays fully intact
     console.warn('[PhotoTextures] failed to load', url);
   };
   return set;

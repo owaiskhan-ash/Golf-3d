@@ -29,6 +29,9 @@ export class TerrainMeshSystem {
 
   /** Wires the photographic CC0 PBR texture set once streamed in; fades the layer on. */
   public setPhotoTextures(set: PhotoTextureSet): void {
+    // Guard the failure path: when KTX2/Basis is unsupported the set carries no textures and
+    // the photographic layer must stay off (uPhotoStrength 0) rather than sampling nothing.
+    if (!set.colorAtlas || !set.normalAtlas) return;
     this.photo = set;
     if (this.shaderUniforms) {
       this.shaderUniforms.uPhotoColorAtlas.value = set.colorAtlas;
@@ -152,6 +155,11 @@ export class TerrainMeshSystem {
         const fineConc = Math.max(0, (hL + hR + hD + hU - 4 * y) * 1.15);
         const broadConc = Math.max(0, (hWL + hWR + hWD + hWU - 4 * y) * 0.36);
         const slopeAO = 0.80 + 0.20 * n.y;
+        // Convexity (crests, bunker lips, green mound shoulders) also needs its own term:
+        // purely concave-only AO left every ridge perfectly clean, which flattens the
+        // micro-relief the normal maps are trying to sell. Positive curvature brightens.
+        const ridgeConv = Math.max(0, (4 * y - (hL + hR + hD + hU)) * 0.55);
+        const crestGain = Math.min(0.10, ridgeConv);
         let treeGroundAO = 1.0;
         for (const tr of hole.trees) {
           const td = Math.hypot(x - tr.x, z - tr.z);
@@ -161,7 +169,11 @@ export class TerrainMeshSystem {
             treeGroundAO = Math.min(treeGroundAO, 1.0 - 0.30 * k * k);
           }
         }
-        aoAttr[aoPtr++] = clamp((1.0 - Math.min(0.45, fineConc + broadConc)) * slopeAO * treeGroundAO, 0.48, 1.0);
+        aoAttr[aoPtr++] = clamp(
+          (1.0 - Math.min(0.45, fineConc + broadConc)) * slopeAO * treeGroundAO + crestGain,
+          0.48,
+          1.0
+        );
 
         positions[ptr] = x;
         positions[ptr + 1] = y;
@@ -228,14 +240,16 @@ export class TerrainMeshSystem {
       uCloudCoverage: { value: 0.49 },
       uMistColor: { value: new THREE.Color(0xc0d9eb) },
       uMistDensity: { value: 0.0045 },
-      // Photographic CC0 PBR layer (ambientCG atlases) — strength fades in once JPGs finish decoding
-      uPhotoStrength: { value: this.photo?.loaded ? 1.0 : 0.0 },
+      // Photographic CC0 PBR layer (KTX2 quad atlases) — strength fades in once transcoded
+      uPhotoStrength: { value: this.photo?.loaded && this.photo.colorAtlas ? 1.0 : 0.0 },
       uPhotoColorAtlas: { value: this.photo?.colorAtlas ?? null },
       uPhotoNormalAtlas: { value: this.photo?.normalAtlas ?? null },
     };
     this.shaderUniforms = uniforms;
 
-    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v5-atlas';
+    // Keep three from inserting its own normal-map sampler for the photo layer: we sample
+    // uPhotoNormalAtlas manually. Bump the cache key whenever the injected GLSL changes.
+    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v6-ktx2-packed';
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
 
@@ -297,13 +311,6 @@ export class TerrainMeshSystem {
             return c / max(l, 0.045);
           }
 
-          // 2x2 atlas quadrant remap: 0 lawn, 1 rough, 2 sand, 3 rock.
-          // Small inset keeps bilinear/mip sampling from bleeding across quadrant borders.
-          vec2 tPhotoQuadUv(vec2 uv, float quad) {
-            vec2 cell = fract(uv) * 0.484 + 0.008;
-            return cell + vec2(quad == 1.0 || quad == 3.0 ? 0.5 : 0.0, quad >= 2.0 ? 0.5 : 0.0);
-          }
-
           float tHash(vec2 p) {
             p = fract(p * vec2(234.34, 435.345));
             p += dot(p, p + 34.23);
@@ -331,6 +338,46 @@ export class TerrainMeshSystem {
             }
             return v;
           }
+
+          // 2x2 atlas quadrant remap: 0 lawn, 1 rough, 2 sand, 3 rock.
+          // The atlas is Basis-compressed with pregenerated mips, so plain bilinear
+          // filtering is safe. The mip level is clamped to 4.0 below: past that a single
+          // texel spans the entire quadrant inset and all four materials average together,
+          // which is what made distant grass ghost into the sand terms.
+          vec2 tPhotoQuadUv(vec2 uv, float quad) {
+            vec2 cell = fract(uv) * 0.484 + 0.008;
+            return cell + vec2(quad == 1.0 || quad == 3.0 ? 0.5 : 0.0, quad >= 2.0 ? 0.5 : 0.0);
+          }
+
+          // Explicit-LOD atlas sample (WebGL2 textureLod), mip-capped so quadrants never
+          // cross-pollinate. Falls back to implicit LOD on GLES2-class hardware.
+          vec4 tPhotoSample(sampler2D atlas, vec2 uv, float quad, float lod) {
+            vec2 auv = tPhotoQuadUv(uv, quad);
+          #ifdef TERRAIN_NO_EXPLICIT_LOD
+            return texture2D(atlas, auv);
+          #else
+            return textureLod(atlas, auv, min(lod, 4.0));
+          #endif
+          }
+
+          // Seamless anti-tiling for albedo: a second sample of the same tile taken at a
+          // different scale AND rotation, crossfaded by low-frequency noise. Both layers are
+          // continuous functions of world position, so unlike per-cell "stochastic tiling"
+          // there is no cell grid to seam — it simply destroys the regular repeat that a
+          // single fixed-scale sample produced from the drone camera.
+          // (Normal maps deliberately do NOT use this: rotating a stored vector field would
+          // rotate the lighting response rather than the detail.)
+          vec4 tPhotoAlbedoOctave(sampler2D atlas, vec2 uv, float quad, float seed, float lod) {
+            vec4 a = tPhotoSample(atlas, uv, quad, lod);
+            float ang = 0.63 + seed * 0.021;
+            float ca = cos(ang);
+            float sa = sin(ang);
+            vec2 uv2 = mat2(ca, -sa, sa, ca) * uv * 0.43 + vec2(0.37, 0.61);
+            vec4 b = tPhotoSample(atlas, uv2, quad, lod);
+            float m = smoothstep(0.28, 0.72, tNoise(uv * 0.23 + seed)) * 0.55;
+            return mix(a, b, m);
+          }
+
         `
         )
         .replace(
@@ -363,13 +410,25 @@ export class TerrainMeshSystem {
           // Photographic PBR samples (CC0 ambientCG): real lawn/meadow/sandstone albedo.
           // bladeHeight/pigment/thatch blend toward photo-derived values so every downstream
           // turf recipe (rough, first cut, fairway, green) inherits photographic structure.
-          vec3 pLawnBlade = texture2D(uPhotoColorAtlas, tPhotoQuadUv(rotXZ * 0.55 + vec2(0.19, 0.41), 0.0)).rgb;
-          vec3 pLawnMacro = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0)).rgb;
-          vec3 pRough = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11), 1.0)).rgb;
-          vec3 pSand = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.5, 2.0)).rgb;
-          vec3 pRock = texture2D(uPhotoColorAtlas, tPhotoQuadUv((vTerrainWorldNormal.y < 0.7
+          // Albedo uses the rotated stochastic tile; the alpha channel carries the packed
+          // dampness/gloss term used later by the roughness pass.
+          vec2 pRockPlanarUv = (vTerrainWorldNormal.y < 0.7
             ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
-            : vTerrainWorldPos.xz) * 0.22, 3.0)).rgb;
+            : vTerrainWorldPos.xz) * 0.22;
+          vec4 pLawnBladeS = tPhotoAlbedoOctave(uPhotoColorAtlas, rotXZ * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0);
+          vec4 pLawnMacroS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 7.9, 0.0);
+          vec4 pRoughS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11), 1.0, 3.1, 0.0);
+          vec4 pSandS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0);
+          vec4 pRockS = tPhotoAlbedoOctave(uPhotoColorAtlas, pRockPlanarUv, 3.0, 9.2, 0.0);
+          vec3 pLawnBlade = pLawnBladeS.rgb;
+          vec3 pLawnMacro = pLawnMacroS.rgb;
+          vec3 pRough = pRoughS.rgb;
+          vec3 pSand = pSandS.rgb;
+          vec3 pRock = pRockS.rgb;
+          // Packed dampness/gloss (0 = dry & matte, 1 = damp & slightly glossy)
+          float pGlossTurf = pLawnBladeS.a;
+          float pGlossSand = pSandS.a;
+          float pGlossRock = pRockS.a;
           float pLawnH = dot(pLawnBlade, vec3(0.2126, 0.7152, 0.0722));
           float pLawnMacroLum = dot(pLawnMacro, vec3(0.2126, 0.7152, 0.0722));
           float pRoughLum = dot(pRough, vec3(0.2126, 0.7152, 0.0722));
@@ -469,16 +528,26 @@ export class TerrainMeshSystem {
             : vTerrainWorldPos.xz * 0.16;
           float rockRelief = 0.5;
           if (wCliff > 0.08) {
+            // Step the parallax UV along the view ray, advancing only while the sampled
+            // height is still below the layer we are testing. Each occlusion test now reads
+            // the *real* photographic relief height from the KTX2 normal atlas' blue
+            // channel instead of the procedural normal map's alpha, which was only a rough
+            // baked height and drifted out of sync with the albedo.
             vec3 pView = normalize(cameraPosition - vTerrainWorldPos);
             vec2 pStep = (vTerrainWorldNormal.y < 0.7 ? vec2(pView.x + pView.z, pView.y) : pView.xz) * 0.016;
             float layerH = 1.0;
             vec2 curUv = pCliffUv;
             float hSample = texture2D(uRockNorm, curUv).a;
+            if (uPhotoStrength > 0.001) {
+              hSample = tPhotoSample(uPhotoNormalAtlas, curUv * 0.64, 3.0, 0.0).b;
+            }
             for (int ps = 0; ps < 3; ps++) {
               if (hSample < layerH) {
                 curUv -= pStep;
                 layerH -= 0.25;
-                hSample = texture2D(uRockNorm, curUv).a;
+                hSample = uPhotoStrength > 0.001
+                  ? tPhotoSample(uPhotoNormalAtlas, curUv * 0.64, 3.0, 0.0).b
+                  : texture2D(uRockNorm, curUv).a;
               }
             }
             rockRelief = clamp(hSample, 0.0, 1.0);
@@ -505,6 +574,9 @@ export class TerrainMeshSystem {
           col = mix(col, greenCol, wGreenCore);
           col = mix(col, bunkerCol, wBunker);
           col = mix(col, rockBase, wCliff);
+          // Note: vTerrainAO is baked from fine/broad concavity, ridge convexity, slope and
+          // tree-canopy ground shade, so binding it to diffuse alone left specular highlights
+          // floating over what should be dark, occluded crevices.
           col *= mix(0.62, 1.03, vTerrainAO);
 
           // Optional Green Break Slope Grid & Animated Flow Chevrons (Crisp thin broadcast hairlines)
@@ -580,6 +652,27 @@ export class TerrainMeshSystem {
           baseRough = mix(baseRough, mix(0.56, 0.38, rBladeH * rNear), rwGreen);
           baseRough = mix(baseRough, 0.90, rwBunk);
           baseRough = mix(baseRough, mix(0.80, 0.16, tidalR), rwCliff);
+
+          // Per-material photographic gloss from the albedo atlas' packed alpha.
+          // Damp hollows read glossier than dry crests, which is what sells the difference
+          // between waxy bentgrass, matte fescue, dry silica and damp sandstone without
+          // spending another texture unit. Re-sampled at the same rotated UV as the albedo
+          // pass so the pattern lines up with what the eye sees.
+          if (uPhotoStrength > 0.001) {
+            float rGlossTurf = tPhotoAlbedoOctave(uPhotoColorAtlas, rRot * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0).a;
+            float rGlossSand = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0).a;
+            float rGlossRock = tPhotoAlbedoOctave(uPhotoColorAtlas, (vTerrainWorldNormal.y < 0.7
+              ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
+              : vTerrainWorldPos.xz) * 0.22, 3.0, 9.2, 0.0).a;
+            // Damp -> lower roughness. Turf barely moves; sand and stone respond strongly.
+            // rGloss* already carry the per-material base roughness, remapped by dampness.
+            float photoRough = baseRough;
+            photoRough = mix(photoRough, mix(0.74, 0.44, rGlossTurf), rwGreen);
+            photoRough = mix(photoRough, mix(0.95, 0.70, rGlossSand), rwBunk);
+            photoRough = mix(photoRough, mix(0.90, 0.30, rGlossRock), rwCliff);
+            baseRough = mix(baseRough, photoRough, uPhotoStrength * 0.7);
+          }
+
           roughnessFactor = baseRough;
         `
         )
@@ -614,19 +707,33 @@ export class TerrainMeshSystem {
           if (nwCliff > 0.12 && nCamDist < 120.0) {
             vec3 nView = normalize(cameraPosition - vTerrainWorldPos);
             vec2 pOff = (vTerrainWorldNormal.y < 0.7 ? vec2(nView.x + nView.z, nView.y) : nView.xz) * 0.022;
-            float h0 = texture2D(uRockNorm, cliffUv).a;
+            float h0 = uPhotoStrength > 0.001
+              ? tPhotoSample(uPhotoNormalAtlas, cliffUv * 1.4, 3.0, 0.0).b
+              : texture2D(uRockNorm, cliffUv).a;
             cliffUv -= pOff * (1.0 - h0);
-            float h1 = texture2D(uRockNorm, cliffUv).a;
+            float h1 = uPhotoStrength > 0.001
+              ? tPhotoSample(uPhotoNormalAtlas, cliffUv * 1.4, 3.0, 0.0).b
+              : texture2D(uRockNorm, cliffUv).a;
             cliffUv -= pOff * (0.5 - h1 * 0.5);
           }
           vec3 rNorm = texture2D(uRockNorm, cliffUv).xyz * 2.0 - 1.0;
 
-          // Photographic PBR normal maps (real lawn fiber, lumpy sand, sandstone fissures)
+          // Photographic PBR normal maps (real lawn fiber, lumpy sand, sandstone fissures).
+          // The atlas packs RG = normal.xy (z is reconstructed) so a whole extra octave fits
+          // in the channel the old JPEG wasted. Sampling stays un-rotated: rotating a stored
+          // vector field would rotate the lighting response, not just the detail.
           if (uPhotoStrength > 0.001) {
-            vec3 gNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(nRot * 0.55 + vec2(0.19, 0.41), 0.0)).xyz * 2.0 - 1.0;
-            vec3 sNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.5, 2.0)).xyz * 2.0 - 1.0;
-            vec3 rNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(cliffUv * 1.4, 3.0)).xyz * 2.0 - 1.0;
-            gNorm = normalize(mix(gNorm, gNormPhoto, uPhotoStrength * 0.80));
+            vec3 gNormPhoto = tPhotoSample(uPhotoNormalAtlas, nRot * 0.55 + vec2(0.19, 0.41), 0.0, 0.0).xyz * 2.0 - 1.0;
+            vec3 gNormPhotoFar = tPhotoSample(uPhotoNormalAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 1.0).xyz * 2.0 - 1.0;
+            vec3 sNormPhoto = tPhotoSample(uPhotoNormalAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 0.0).xyz * 2.0 - 1.0;
+            vec3 rNormPhoto = tPhotoSample(uPhotoNormalAtlas, cliffUv * 1.4, 3.0, 0.0).xyz * 2.0 - 1.0;
+            // Rebuild z from xy (packed as B = height, not the vector z)
+            gNormPhoto.z = sqrt(max(0.0, 1.0 - dot(gNormPhoto.xy, gNormPhoto.xy)));
+            gNormPhotoFar.z = sqrt(max(0.0, 1.0 - dot(gNormPhotoFar.xy, gNormPhotoFar.xy)));
+            sNormPhoto.z = sqrt(max(0.0, 1.0 - dot(sNormPhoto.xy, sNormPhoto.xy)));
+            rNormPhoto.z = sqrt(max(0.0, 1.0 - dot(rNormPhoto.xy, rNormPhoto.xy)));
+            vec3 gPhotoMixed = normalize(gNormPhoto + gNormPhotoFar * 0.55);
+            gNorm = normalize(mix(gNorm, gPhotoMixed, uPhotoStrength * 0.80));
             sNorm = normalize(mix(sNorm, sNormPhoto, uPhotoStrength * 0.85));
             rNorm = normalize(mix(rNorm, rNormPhoto, uPhotoStrength * 0.90));
           }
