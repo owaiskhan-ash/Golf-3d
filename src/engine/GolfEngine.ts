@@ -629,10 +629,11 @@ export class GolfEngine {
   public setGraphicsQuality(quality: GraphicsQuality): void {
     this.qualityLevel = quality;
     this.renderer.setPixelRatio(
-      quality === 'medium' ? 1 : Math.min(window.devicePixelRatio, quality === 'ultra' ? 1.5 : 1.25)
+      quality === 'medium' ? 1 : Math.min(window.devicePixelRatio, quality === 'ultra' ? 2.0 : 1.5)
     );
     this.postProc.setQuality(quality);
     this.oceanSys.planarReflectionEnabled = quality !== 'medium';
+    this.oceanSys.setReflectionResolution(quality === 'ultra' ? 1024 : quality === 'high' ? 768 : 512);
     this.skySys.setShadowResolution(quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : 1024);
     const density: FoliageDensity = quality === 'ultra' ? 'high' : quality === 'high' ? 'medium' : 'low';
     if (density !== this.foliageDensity) {

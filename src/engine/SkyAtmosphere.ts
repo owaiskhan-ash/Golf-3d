@@ -77,7 +77,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     rayleigh: 2.75,
     mieCoefficient: 0.0115,
     mieDirectionalG: 0.89,
-    exposure: 0.52,
+    exposure: 0.55,
     fogColor: 0xe2b690,
     fogDensity: 0.00105,
     sunColor: 0xffb870,
@@ -85,7 +85,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     hemiSkyColor: 0xc29276,
     hemiGroundColor: 0x1e2816,
     hemiIntensity: 0.36,
-    envIntensity: 0.44,
+    envIntensity: 0.50,
     bounceColor: 0x89a8d8,
     bounceIntensity: 0.34,
     mistDensity: 0.0048,
@@ -106,7 +106,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     hemiSkyColor: 0x5869a6,
     hemiGroundColor: 0x141b10,
     hemiIntensity: 0.38,
-    envIntensity: 0.46,
+    envIntensity: 0.50,
     bounceColor: 0x6c88c4,
     bounceIntensity: 0.38,
     mistDensity: 0.0068,
@@ -495,11 +495,14 @@ export class SkyAtmosphereSystem {
   }
 
   public setShadowResolution(size: 1024 | 2048 | 4096): void {
-    const clamped = size >= 4096 ? 2048 : size >= 2048 ? 1536 : 1024;
+    const clamped = size >= 4096 ? 4096 : size >= 2048 ? 2048 : 1024;
     if (this.csm.shadowMapSize === clamped) return;
     this.csm.shadowMapSize = clamped;
-    for (const light of this.csm.lights) {
+    for (let i = 0; i < this.csm.lights.length; i++) {
+      const light = this.csm.lights[i];
       light.shadow.mapSize.set(clamped, clamped);
+      // Softer, more filmic penumbra at higher resolutions
+      light.shadow.radius = i === 0 ? (clamped >= 4096 ? 1.9 : 1.25) : i === 1 ? (clamped >= 4096 ? 2.6 : 1.75) : (clamped >= 4096 ? 3.4 : 2.4);
       if (light.shadow.map) {
         light.shadow.map.dispose();
         light.shadow.map = null;

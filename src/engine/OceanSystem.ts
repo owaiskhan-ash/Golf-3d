@@ -254,6 +254,20 @@ export class OceanSystem {
   private textureMatrix = new THREE.Matrix4();
   public planarReflectionEnabled = true;
 
+  /** Re-allocates the planar-reflection render target (quality ladder: 384 low / 768 high / 1024 ultra). */
+  public setReflectionResolution(size: number): void {
+    const s = Math.max(256, Math.min(1024, Math.round(size)));
+    if (this.reflectRT.width === s) return;
+    this.reflectRT.dispose();
+    this.reflectRT = new THREE.WebGLRenderTarget(s, s, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      type: THREE.HalfFloatType,
+      depthBuffer: true,
+    });
+    this.material.uniforms.uReflectMap.value = this.reflectRT.texture;
+  }
+
   // Scratch vectors/matrices for zero-GC planar reflection matrix calculation
   private readonly _mirrorPos = new THREE.Vector3(0, 0, 0);
   private readonly _mirrorNormal = new THREE.Vector3(0, 1, 0);
