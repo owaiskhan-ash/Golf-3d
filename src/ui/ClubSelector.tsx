@@ -8,6 +8,8 @@ interface ClubSelectorProps {
   recommendedClubId: string;
   disabled: boolean;
   onSelectClub: (id: string) => void;
+  /** Mobile: float above the swing dock. False when the dock is hidden (swipe mode). */
+  lifted?: boolean;
 }
 
 export const ClubSelector: React.FC<ClubSelectorProps> = ({
@@ -15,6 +17,7 @@ export const ClubSelector: React.FC<ClubSelectorProps> = ({
   recommendedClubId,
   disabled,
   onSelectClub,
+  lifted = true,
 }) => {
   const [open, setOpen] = useState(false);
   const isMobile = useIsMobile();
@@ -22,7 +25,7 @@ export const ClubSelector: React.FC<ClubSelectorProps> = ({
   return (
     <div
       className={`pointer-events-auto fixed z-30 flex flex-col items-end ${
-        isMobile ? 'bottom-[6.5rem] right-2' : 'bottom-3 right-3'
+        isMobile ? (lifted ? 'bottom-[6.5rem] right-2' : 'bottom-3 right-2') : 'bottom-3 right-3'
       }`}
     >
       {open && (

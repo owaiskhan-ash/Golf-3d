@@ -10,11 +10,15 @@ import {
   FlipHorizontal2,
   Gauge,
   Grid3x3,
+  Hand,
   LifeBuoy,
   Menu,
+  MousePointerClick,
+  Move,
   Orbit,
   RotateCcw,
   Settings,
+  Sliders,
   Trophy,
   Undo2,
   Wrench,
@@ -24,9 +28,11 @@ import { COURSE_HOLES } from '../course/courseData';
 import type { DifficultyMode } from '../course/types';
 import type { EngineSnapshot } from '../engine/GolfEngine';
 import type { CameraMode } from '../engine/CameraSystem';
+import { SHOT_TYPE_PRESETS, type ShotTypeId } from '../physics/clubs';
 import { SURFACE_BADGES } from './TopBar';
 import { TelemetryPanel } from './TelemetryPanel';
 import { Minimap } from './Minimap';
+import type { SwingInputMode, SwingUiState } from './SwingControls';
 
 interface MobileHudProps {
   snap: EngineSnapshot;
@@ -44,15 +50,33 @@ interface MobileHudProps {
   onOpenScorecard: () => void;
   onOpenSettings: () => void;
   onAimWorld: (x: number, z: number) => void;
+  /** Live swing UI mirror + commands routed to SwingControls' imperative handle */
+  swingUi: SwingUiState;
+  onSetSwingMode: (m: SwingInputMode) => void;
+  onSetShotType: (id: ShotTypeId) => void;
+  onToggleProDrawer: () => void;
 }
 
-type DrawerSection = 'holes' | 'view' | 'data' | 'tools';
+type DrawerSection = 'swing' | 'holes' | 'view' | 'data' | 'tools';
 
 const SECTIONS: Array<{ id: DrawerSection; icon: React.ElementType; label: string }> = [
+  { id: 'swing', icon: Crosshair, label: 'Swing' },
   { id: 'holes', icon: Flag, label: 'Holes' },
   { id: 'view', icon: Camera, label: 'View' },
   { id: 'data', icon: Activity, label: 'Data' },
   { id: 'tools', icon: Wrench, label: 'Tools' },
+];
+
+const SWING_MODES: Array<{
+  id: SwingInputMode;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+}> = [
+  { id: 'swipe_pull', label: 'Swipe', desc: 'Pull · tilt · release', icon: Hand },
+  { id: 'three_click', label: '3-Click', desc: 'Classic timing taps', icon: MousePointerClick },
+  { id: 'mouse_drag', label: 'Drag', desc: 'Pull the dock pad', icon: Move },
+  { id: 'pro_sim', label: 'Pro Sim', desc: 'TrackMan sliders', icon: Sliders },
 ];
 
 const CAM_MODES: Array<{ id: CameraMode; label: string; icon: React.ElementType }> = [
@@ -84,9 +108,13 @@ export const MobileHud: React.FC<MobileHudProps> = ({
   onOpenScorecard,
   onOpenSettings,
   onAimWorld,
+  swingUi,
+  onSetSwingMode,
+  onSetShotType,
+  onToggleProDrawer,
 }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [section, setSection] = useState<DrawerSection>('holes');
+  const [section, setSection] = useState<DrawerSection>('swing');
 
   const { hole, distanceToPinYds, lieSurface, wind, aimYawRad, difficulty } = snap;
   const distFeet = distanceToPinYds * 3;
@@ -199,6 +227,85 @@ export const MobileHud: React.FC<MobileHudProps> = ({
                 className="min-w-0 flex-1 overflow-y-auto p-3"
                 style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}
               >
+                {section === 'swing' && (
+                  <div>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Swing Style
+                    </div>
+                    <div className="mb-4 grid grid-cols-2 gap-1.5">
+                      {SWING_MODES.map((m) => {
+                        const Icon = m.icon;
+                        const active = swingUi.mode === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => {
+                              onSetSwingMode(m.id);
+                              if (m.id === 'swipe_pull') close();
+                            }}
+                            className={`flex flex-col items-start gap-1 rounded-xl px-3 py-2.5 text-left transition active:scale-95 ${
+                              active ? 'bg-sky-500 text-slate-950' : 'bg-white/5 text-slate-300'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 text-xs font-bold">
+                              <Icon className="h-4 w-4" />
+                              {m.label}
+                            </span>
+                            <span
+                              className={`text-[9px] font-medium ${
+                                active ? 'text-slate-800' : 'text-slate-500'
+                              }`}
+                            >
+                              {m.desc}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {swingUi.mode === 'swipe_pull' && (
+                      <div className="mb-4 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-[10px] text-emerald-200">
+                        Pull back anywhere on the course — tilt to steer, release to strike.
+                      </div>
+                    )}
+
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Shot Type
+                    </div>
+                    <div className="mb-4 grid grid-cols-3 gap-1.5">
+                      {SHOT_TYPE_PRESETS.map((st) => {
+                        const active = swingUi.shotType === st.id;
+                        return (
+                          <button
+                            key={st.id}
+                            onClick={() => onSetShotType(st.id)}
+                            title={st.shortDesc}
+                            className={`rounded-xl px-2 py-2 text-[11px] font-bold transition active:scale-95 ${
+                              active ? 'bg-sky-500 text-slate-950' : 'bg-white/5 text-slate-300'
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        onToggleProDrawer();
+                        close();
+                      }}
+                      className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition active:scale-[0.98] ${
+                        swingUi.proDrawerOpen
+                          ? 'bg-amber-400/20 text-amber-300 ring-1 ring-amber-400/40'
+                          : 'bg-white/5 text-slate-200'
+                      }`}
+                    >
+                      <Sliders className="h-4 w-4" />
+                      Shot Shaping {swingUi.proDrawerOpen ? '· Open' : ''}
+                    </button>
+                  </div>
+                )}
+
                 {section === 'holes' && (
                   <div>
                     <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
