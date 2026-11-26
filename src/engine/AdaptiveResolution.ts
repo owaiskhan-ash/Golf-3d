@@ -35,7 +35,7 @@ export class AdaptiveResolution {
   private stepUpStreak = 0;
   private scale: number;
 
-  public readonly minScale: number;
+  public minScale: number;
   public readonly maxScale: number;
   public readonly targetFrameMs: number;
   public readonly maxFrameMs: number;
@@ -53,6 +53,12 @@ export class AdaptiveResolution {
     this.comfortableFrameMs = options.comfortableFrameMs ?? 1000 / 58;
     this.windowSeconds = options.windowSeconds ?? 1.6;
     this.scale = this.maxScale;
+  }
+
+  /** Lets a quality tier decide how far resolution may fall (LOW goes deeper). */
+  public setMinScale(next: number): void {
+    this.minScale = Math.max(0.25, Math.min(this.maxScale, next));
+    if (this.scale < this.minScale) this.applyScale(this.minScale, 0.1);
   }
 
   public get currentScale(): number {

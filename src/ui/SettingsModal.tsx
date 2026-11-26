@@ -1,5 +1,6 @@
 import React from 'react';
-import { Volume2, VolumeX, X, Sun, Wind, Activity, Sparkles, Hand } from 'lucide-react';
+import { Volume2, VolumeX, X, Sun, Wind, Activity, Sparkles, Hand, Gauge } from 'lucide-react';
+import type { GraphicsQuality } from '../engine/PostProcessing';
 import type { DifficultyMode } from '../course/types';
 import { TIME_OF_DAY_PRESETS, type TimeOfDayPreset } from '../engine/SkyAtmosphere';
 import { useIsMobile } from './useIsMobile';
@@ -16,6 +17,8 @@ interface SettingsModalProps {
   proTracerEnabled: boolean;
   /** Mobile swipe steering range (degrees, full shots). Putts scale to ~42%. */
   swipeSensitivityDeg: number;
+  quality: GraphicsQuality;
+  autoQuality: boolean;
   onPlayerNameChange: (name: string) => void;
   onDifficulty: (diff: DifficultyMode) => void;
   onTimeOfDay: (p: TimeOfDayPreset) => void;
@@ -24,6 +27,8 @@ interface SettingsModalProps {
   onAimPreviewToggle: (enabled: boolean) => void;
   onProTracerToggle: (enabled: boolean) => void;
   onSwipeSensitivityChange: (deg: number) => void;
+  onQuality: (q: GraphicsQuality) => void;
+  onAutoQualityToggle: (enabled: boolean) => void;
   onClose: () => void;
 }
 
@@ -38,6 +43,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   aimPreviewEnabled,
   proTracerEnabled,
   swipeSensitivityDeg,
+  quality,
+  autoQuality,
   onPlayerNameChange,
   onDifficulty,
   onTimeOfDay,
@@ -46,6 +53,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onAimPreviewToggle,
   onProTracerToggle,
   onSwipeSensitivityChange,
+  onQuality,
+  onAutoQualityToggle,
   onClose,
 }) => {
   const isMobile = useIsMobile();
@@ -107,6 +116,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Graphics Quality — the single biggest lever on frame rate */}
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 font-bold uppercase tracking-wider text-slate-300">
+              <Gauge className="h-3.5 w-3.5 text-sky-300" />
+              <span>Graphics &amp; Performance</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(
+                [
+                  { id: 'ultra', label: 'Ultra', desc: 'Full detail · heavy' },
+                  { id: 'high', label: 'High', desc: 'Balanced' },
+                  { id: 'medium', label: 'Medium', desc: 'No AO/bloom' },
+                  { id: 'low', label: 'Lighter', desc: 'Fastest' },
+                ] as const
+              ).map((q) => (
+                <button
+                  key={q.id}
+                  onClick={() => onQuality(q.id)}
+                  className={`rounded-xl px-2 py-2 text-center transition ${
+                    quality === q.id
+                      ? 'bg-sky-400 text-slate-950 font-bold'
+                      : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  <div className="font-bold">{q.label}</div>
+                  <div className={`text-[9px] ${quality === q.id ? 'text-slate-900' : 'text-slate-400'}`}>
+                    {q.desc}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => onAutoQualityToggle(!autoQuality)}
+              className={`mt-1.5 w-full rounded-xl py-2 font-semibold transition ${
+                autoQuality ? 'bg-emerald-500/20 text-emerald-200' : 'bg-white/5 text-slate-400 hover:bg-white/10'
+              }`}
+            >
+              {autoQuality ? 'Auto-tune: On (lowers quality if FPS drops)' : 'Auto-tune: Off'}
+            </button>
+            <p className="mt-1.5 text-[10px] leading-snug text-slate-400">
+              Pick <span className="font-semibold text-sky-300">Lighter</span> for the smoothest
+              frame rate: one shadow cascade, no post effects, fewer trees and grass, and the
+              render resolution adapts automatically.
+            </p>
           </div>
 
           {/* Atmosphere / Sun */}

@@ -6,7 +6,14 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 
-export type GraphicsQuality = 'ultra' | 'high' | 'medium';
+/**
+ * Quality ladder, cheapest last.
+ *  ultra  — full stack (GTAO, bloom, god rays, 12-tap bokeh)
+ *  high   — full stack, cheaper sample counts
+ *  medium — no AO/bloom/shafts/bokeh, single cheap grade pass
+ *  low    — composer bypassed entirely; straight MSAA render to the canvas
+ */
+export type GraphicsQuality = 'ultra' | 'high' | 'medium' | 'low';
 
 const SUN_SHAFTS_HALATION_SHADER = {
   uniforms: {
@@ -229,6 +236,13 @@ export class PostProcessingPipeline {
   private smoothExposureLift = 1.0;
   private aoScale = 0.55;
   public enabled = true;
+  /** When false the composer is bypassed and the renderer draws straight to the canvas. */
+  public get bypassed(): boolean {
+    return !this.enabled;
+  }
+  public set bypassed(value: boolean) {
+    this.enabled = !value;
+  }
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -404,7 +418,10 @@ export class PostProcessingPipeline {
     this.shaftsPass.uniforms.uTexelSize.value.set(1 / rtW, 1 / rtH);
     this.gradePass.uniforms.uTexelSize.value.set(1 / rtW, 1 / rtH);
 
-    if (quality === 'medium') {
+    // 'low' bypasses the composer entirely — see GolfEngine.setGraphicsQuality, which drives
+    // the renderer straight to the canvas. Keep the passes in a cheap, consistent state in
+    // case the composer is still used for a frame mid-transition.
+    if (quality === 'low' || quality === 'medium') {
       // Cheap tier: no AO, no bloom, no volumetric shafts, no 12-tap bokeh. The remaining
       // grade pass is a single 5-tap sharpen+tonemap and costs almost nothing.
       this.gtaoPass.enabled = false;
@@ -414,8 +431,8 @@ export class PostProcessingPipeline {
       this.shaftsPass.uniforms.uStrength.value = 0.45;
       this.gradePass.uniforms.uHasDepth.value = 0.0;
       this.gradePass.uniforms.uDofTaps.value = 0.0;
-      this.gradePass.uniforms.uSharpness.value = 0.34;
-      this.gradePass.uniforms.uGradeStrength.value = 0.75;
+      this.gradePass.uniforms.uSharpness.value = quality === 'low' ? 0.28 : 0.34;
+      this.gradePass.uniforms.uGradeStrength.value = quality === 'low' ? 0.55 : 0.75;
     } else {
       this.gtaoPass.enabled = true;
       this.gtaoPass.updateGtaoMaterial({ samples: quality === 'ultra' ? 16 : 12 });
@@ -452,6 +469,10 @@ export class PostProcessingPipeline {
     if (this.enabled) {
       this.composer.render();
     } else {
+      // Composer bypassed (LOW tier). A direct render still applies the renderer's own tone
+      // mapping + output colour-space conversion, so the image is not double- or un-graded —
+      // it simply skips the composer's intermediate HalfFloat targets, the GTAO/bloom/shaft
+      // passes and the grade shader's sharpening/vignette/dither.
       this.renderer.render(this.scene, this.camera);
     }
   }

@@ -125,10 +125,15 @@ export function pickInitialQuality(): GraphicsQuality {
   // Coarse-pointer desktops (touch laptops) are treated as high, not medium.
   const coarseTouch = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
 
-  if (isMobile) return cores >= 8 && memGb >= 6 ? 'high' : 'medium';
-  if (cores <= 4 || memGb <= 4) return 'high';
+  // Deliberately conservative: starting one tier low and letting the auto-scaler climb is a
+  // far better first impression than starting high and stuttering for the first ten seconds.
+  if (isMobile) {
+    if (cores >= 8 && memGb >= 6) return 'medium';
+    return 'low';
+  }
+  if (cores <= 4 || memGb <= 4) return 'medium';
   if (coarseTouch) return 'high';
-  return 'ultra';
+  return 'high';
 }
 
 export class GolfEngine {
@@ -712,19 +717,40 @@ export class GolfEngine {
 
   public setGraphicsQuality(quality: GraphicsQuality): void {
     this.qualityLevel = quality;
+
+    const isLow = quality === 'low';
+    const isMedium = quality === 'medium';
+
     // Shadow cost scales with cascades x resolution, and 3x4096^2 means redrawing the whole
     // scene depth-only into three 64 MB targets every frame. 2048 is the sweet spot for the
-    // tight 0..22m golfer cascade; ULTRA's 4096 only pays off for close-up replays.
-    this.skySys.setShadowResolution(quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : 1024);
-    const ceiling =
-      quality === 'medium' ? 1.0 : Math.min(window.devicePixelRatio, quality === 'ultra' ? 1.75 : 1.5);
+    // tight 0..22m golfer cascade; ULTRA's 4096 only pays off for close-up replays. LOW drops
+    // to a single tight cascade — the single largest saving available at this tier.
+    this.skySys.setShadowResolution(quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : 512);
+    this.skySys.setShadowCascades(isLow ? 1 : 3);
+
+    const ceiling = isLow
+      ? 0.85
+      : isMedium
+        ? 1.0
+        : Math.min(window.devicePixelRatio, quality === 'ultra' ? 1.75 : 1.5);
     // Respect whatever scale dynamic resolution has currently settled on instead of snapping
     // back to the ceiling (which used to make the auto-scaler fight every quality change).
     this.renderer.setPixelRatio(ceiling * (this.adaptiveRes?.currentScale ?? 1));
+
+    // LOW renders straight to the canvas: no render targets, no composer copies, and the
+    // canvas' own MSAA is used instead of the composer's HalfFloat target.
+    this.postProc.bypassed = isLow;
     this.postProc.setQuality(quality);
-    this.oceanSys.planarReflectionEnabled = quality !== 'medium';
+
+    this.oceanSys.planarReflectionEnabled = quality === 'ultra' || quality === 'high';
     this.oceanSys.setReflectionResolution(quality === 'ultra' ? 1024 : quality === 'high' ? 512 : 256);
-    if (this.adaptiveRes) this.adaptiveRes.reset();
+
+    if (this.adaptiveRes) {
+      // The dynamic-resolution floor is the whole point of LOW, so it may go deeper there.
+      this.adaptiveRes.setMinScale(isLow ? 0.4 : 0.5);
+      this.adaptiveRes.reset();
+    }
+
     const density: FoliageDensity = quality === 'ultra' ? 'high' : quality === 'high' ? 'medium' : 'low';
     if (density !== this.foliageDensity) {
       this.foliageDensity = density;
@@ -733,6 +759,7 @@ export class GolfEngine {
       this.skySys.applyCSMToScene();
       this.refreshDepthExcludeCache();
     }
+    this.emitSnapshot();
   }
 
   public setCameraMode(mode: CameraMode): void {
@@ -1407,13 +1434,15 @@ export class GolfEngine {
       }
 
       // Auto frame-time quality scaler (< ~24 FPS sustained for 2.5s steps down gracefully)
-      if (this.autoQualityEnabled && !document.hidden && this.qualityLevel !== 'medium') {
+      if (this.autoQualityEnabled && !document.hidden && this.qualityLevel !== 'low') {
         this.fpsWindowS += rawDt;
         this.fpsFrames++;
         if (this.fpsWindowS >= 2.5) {
           const avgFrameMs = (this.fpsWindowS / Math.max(1, this.fpsFrames)) * 1000;
           if (avgFrameMs > 42) {
-            const nextQ: GraphicsQuality = this.qualityLevel === 'ultra' ? 'high' : 'medium';
+            const ladder: GraphicsQuality[] = ['ultra', 'high', 'medium', 'low'];
+            const idx = ladder.indexOf(this.qualityLevel);
+            const nextQ: GraphicsQuality = ladder[Math.min(ladder.length - 1, idx + 1)];
             this.setGraphicsQuality(nextQ);
             this.autoQualityNote = `Auto-tuned graphics to ${nextQ.toUpperCase()} for smoother FPS`;
             this.emitSnapshot();

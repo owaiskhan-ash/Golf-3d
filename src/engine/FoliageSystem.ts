@@ -316,7 +316,7 @@ export class FoliageSystem {
 
   private buildCoastalGrass(sampler: HoleTerrainSampler, density: FoliageDensity): void {
     const hole = sampler.hole;
-    const targetCount = density === 'high' ? 20000 : density === 'medium' ? 11000 : 5500;
+    const targetCount = density === 'high' ? 20000 : density === 'medium' ? 11000 : 3600;
     const rng = makeSeededRandom(hole.holeNumber * 997 + 41);
 
     const bladeGeo = this.createGrassBladeGeometry();
@@ -394,7 +394,9 @@ export class FoliageSystem {
    * that streams world-locked grass ahead of camera & ball motion without hitches or post-shot pop-in.
    */
   private buildHeroGrassBuffer(): void {
-    this.chunkCap = this.currentDensity === 'high' ? 1050 : this.currentDensity === 'medium' ? 580 : 260;
+    // LOW keeps a small blade box: instanced grass is one of the largest fragment costs at
+    // grazing camera angles, and the terrain's own detail shader already sells the turf there.
+    this.chunkCap = this.currentDensity === 'high' ? 1050 : this.currentDensity === 'medium' ? 580 : 130;
     const heroCap = GRASS_CHUNK_COUNT * this.chunkCap;
     const bladeGeo = this.createGrassBladeGeometry();
     const bladeMat = this.createGrassMaterial();
@@ -593,7 +595,7 @@ export class FoliageSystem {
    * Slender golden coastal fescue seed-plume tufts in heavy rough & coastal dune margins.
    */
   private buildCoastalFescuePlumes(sampler: HoleTerrainSampler, density: FoliageDensity): void {
-    const cap = density === 'high' ? 2400 : density === 'medium' ? 1200 : 500;
+    const cap = density === 'high' ? 2400 : density === 'medium' ? 1200 : 320;
     const rng = makeSeededRandom(sampler.hole.holeNumber * 1297 + 41);
 
     // 3 arched slender stalks crowned with soft feathered seed-plume tips
@@ -684,7 +686,7 @@ export class FoliageSystem {
    * Low coastal Monterey iceplant & golden cliff-top scrub along rocky cliff brows.
    */
   private buildCoastalIceplant(sampler: HoleTerrainSampler, density: FoliageDensity): void {
-    const cap = density === 'high' ? 1800 : density === 'medium' ? 1000 : 450;
+    const cap = density === 'high' ? 1800 : density === 'medium' ? 1000 : 300;
     const rng = makeSeededRandom(sampler.hole.holeNumber * 613 + 77);
     const geo = new THREE.DodecahedronGeometry(0.26, 1);
     geo.scale(1.3, 0.42, 1.3);
