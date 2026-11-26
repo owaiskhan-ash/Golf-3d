@@ -40,6 +40,9 @@ export const App: React.FC = () => {
   // Graphics quality is locked to ULTRA (engine default) — no user toggle
   const [difficulty, setDifficulty] = useState<DifficultyMode>('pro');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  // Auto-tune defaults on (matches the engine); picking an explicit tier switches it off so
+  // the scaler does not immediately undo the user's choice.
+  const [autoQuality, setAutoQuality] = useState(true);
   const [aimPreviewEnabled, setAimPreviewEnabled] = useState(true);
   const [proTracerEnabled, setProTracerEnabled] = useState(true);
   const isMobile = useIsMobile();
@@ -347,6 +350,17 @@ export const App: React.FC = () => {
             aimPreviewEnabled={aimPreviewEnabled}
             proTracerEnabled={proTracerEnabled}
             swipeSensitivityDeg={swipeSensitivityDeg}
+            quality={snap.qualityLevel}
+            autoQuality={autoQuality}
+            onQuality={(q) => {
+              setAutoQuality(false);
+              engineRef.current?.setAutoQualityEnabled(false);
+              engineRef.current?.setGraphicsQuality(q);
+            }}
+            onAutoQualityToggle={(en) => {
+              setAutoQuality(en);
+              engineRef.current?.setAutoQualityEnabled(en);
+            }}
             onPlayerNameChange={(name) => setCareerProfile(updatePlayerName(name))}
             onDifficulty={(d) => {
               setDifficulty(d);

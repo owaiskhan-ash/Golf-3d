@@ -495,8 +495,8 @@ export class SkyAtmosphereSystem {
     this.csm.update();
   }
 
-  public setShadowResolution(size: 1024 | 2048 | 4096): void {
-    const clamped = size >= 4096 ? 4096 : size >= 2048 ? 2048 : 1024;
+  public setShadowResolution(size: 512 | 1024 | 2048 | 4096): void {
+    const clamped = size >= 4096 ? 4096 : size >= 2048 ? 2048 : size >= 1024 ? 1024 : 512;
     if (this.csm.shadowMapSize === clamped) return;
     this.csm.shadowMapSize = clamped;
     for (let i = 0; i < this.csm.lights.length; i++) {
@@ -510,6 +510,21 @@ export class SkyAtmosphereSystem {
       }
     }
     this.csm.updateShadowBounds();
+  }
+
+  /**
+   * Rebuilds the shadow cascade count. Each cascade is a full depth-only scene render into its
+   * own map, so going 3 -> 1 removes two thirds of the shadow pass — the biggest single win at
+   * the LOW tier. Only the tightest cascade is kept, so shadows are crisp near the golfer and
+   * absent far away.
+   */
+  public setShadowCascades(count: 1 | 2 | 3): void {
+    const n = count === 1 ? 1 : count === 2 ? 2 : 3;
+    if (this.csm.cascades === n) return;
+    this.csm.cascades = n;
+    this.csm.updateFrustums();
+    this.csm.update();
+    this.applyCSMToScene();
   }
 
   public refreshCascades(): void {
