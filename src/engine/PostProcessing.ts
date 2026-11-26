@@ -59,11 +59,11 @@ const SUN_SHAFTS_HALATION_SHADER = {
 
         // 2. Depth-gated screen-space volumetric sun shafts (strictly sky/cloud gaps; never bleeds off bunkers or shirts)
         if (uSunVisible > 0.005) {
-          vec2 delta = (vUv - uSunScreenPos) * 0.075;
+          vec2 delta = (vUv - uSunScreenPos) * 0.062;
           vec2 coord = vUv;
           float decay = 1.0;
           float accum = 0.0;
-          for (int i = 0; i < 8; i++) {
+          for (int i = 0; i < 12; i++) {
             coord -= delta;
             vec2 cUv = clamp(coord, 0.002, 0.998);
             float skyDepth = uHasDepth > 0.5 ? step(0.994, texture2D(uDepthTex, cUv).x) : 1.0;
@@ -71,11 +71,11 @@ const SUN_SHAFTS_HALATION_SHADER = {
             float luma = dot(smp, vec3(0.2126, 0.7152, 0.0722));
             float skyPass = smoothstep(0.90, 1.85, luma) * skyDepth;
             accum += skyPass * decay;
-            decay *= 0.835;
+            decay *= 0.875;
           }
           float distToSun = length(vUv - uSunScreenPos);
           float radialFalloff = exp(-distToSun * 2.1);
-          col += uSunColor * accum * 0.062 * radialFalloff * uSunVisible * uStrength;
+          col += uSunColor * accum * 0.052 * radialFalloff * uSunVisible * uStrength;
         }
       }
 
@@ -156,22 +156,23 @@ const BROADCAST_GRADE_SHADER = {
       if (farCoc > 0.04) {
         vec2 aspectScale = vec2(uTexelSize.y / max(uTexelSize.x, 1e-5), 1.0);
         float rad = farCoc * 0.0024;
-        vec2 disk[6];
-        disk[0] = vec2( 1.0,  0.0);
-        disk[1] = vec2(-1.0,  0.0);
-        disk[2] = vec2( 0.5,  0.866);
-        disk[3] = vec2(-0.5,  0.866);
-        disk[4] = vec2( 0.5, -0.866);
-        disk[5] = vec2(-0.5, -0.866);
+        // 12-tap golden-angle spiral disc — visibly creamier, more circular bokeh than a 6-tap hex
         vec3 bokehAcc = sharpCol;
         float wAcc = 1.0;
-        for (int i = 0; i < 6; i++) {
-          vec2 tUv = clamp(vUv + disk[i] * rad * aspectScale, 0.002, 0.998);
+        for (int i = 0; i < 12; i++) {
+          float fi = float(i);
+          float spiralR = sqrt((fi + 0.5) / 12.0);
+          float spiralA = fi * 2.39996;
+          vec2 tUv = clamp(vUv + vec2(cos(spiralA), sin(spiralA)) * spiralR * rad * aspectScale, 0.002, 0.998);
           float tapZ = linearViewZ(texture2D(uDepthTex, tUv).x);
           // Reject foreground samples (golfer/trees) so background bokeh never bleeds sharp silhouettes
           float bgGate = smoothstep(uFocusDist + 14.0, uFocusDist + 28.0, tapZ);
-          bokehAcc += texture2D(tDiffuse, tUv).rgb * bgGate;
-          wAcc += bgGate;
+          // Bright-weight highlights so sun glints sparkle as natural bokeh discs
+          vec3 tapCol = texture2D(tDiffuse, tUv).rgb;
+          float tapLuma = dot(tapCol, vec3(0.2126, 0.7152, 0.0722));
+          float hl = 1.0 + smoothstep(0.75, 1.6, tapLuma) * 1.4;
+          bokehAcc += tapCol * bgGate * hl;
+          wAcc += bgGate * hl;
         }
         sharpCol = mix(sharpCol, bokehAcc / wAcc, farCoc * 0.82);
       }
@@ -195,7 +196,7 @@ const BROADCAST_GRADE_SHADER = {
       float maxC = max(graded.r, max(graded.g, graded.b));
       float minC = min(graded.r, min(graded.g, graded.b));
       float sat = maxC - minC;
-      graded = mix(vec3(luma), graded, 1.0 + 0.11 * (1.0 - sat));
+      graded = mix(vec3(luma), graded, 1.0 + 0.14 * (1.0 - sat));
 
       // Crisp broadcast split-tone: deep coastal shadows, warm sunlit highlights
       vec3 shadowTint = vec3(0.955, 0.985, 1.040);
@@ -224,6 +225,7 @@ export class PostProcessingPipeline {
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpFwd = new THREE.Vector3();
   private smoothExposureLift = 1.0;
+  private aoScale = 0.55;
   public enabled = true;
 
   constructor(
@@ -276,11 +278,14 @@ export class PostProcessingPipeline {
       samples: 8,
     });
     this.gtaoPass.output = GTAOPass.OUTPUT.Default;
-    this.gtaoPass.blendIntensity = 0.64;
+    this.gtaoPass.blendIntensity = 0.72;
 
     const origGtaoSetSize = this.gtaoPass.setSize.bind(this.gtaoPass);
     this.gtaoPass.setSize = (w: number, h: number) => {
-      origGtaoSetSize(Math.max(256, Math.round(w * 0.55)), Math.max(256, Math.round(h * 0.55)));
+      origGtaoSetSize(
+        Math.max(256, Math.round(w * this.aoScale)),
+        Math.max(256, Math.round(h * this.aoScale))
+      );
     };
 
     // Mask out sky dome, clouds, dense wind-animated grass blades, and alpha-cutout canopy quads during AO depth/normal pass
@@ -387,6 +392,8 @@ export class PostProcessingPipeline {
   public setQuality(quality: GraphicsQuality): void {
     const dpr = this.renderer.getPixelRatio();
     const size = this.renderer.getSize(new THREE.Vector2());
+    // AO buffer resolution scales with quality (set BEFORE composer resize so setSize picks it up)
+    this.aoScale = quality === 'ultra' ? 0.7 : quality === 'high' ? 0.6 : 0.5;
     this.composer.setPixelRatio(dpr);
     this.composer.setSize(size.x, size.y);
     const rtW = Math.max(1, Math.round(size.x * dpr));
@@ -404,13 +411,15 @@ export class PostProcessingPipeline {
       this.gradePass.uniforms.uGradeStrength.value = 0.75;
     } else {
       this.gtaoPass.enabled = true;
-      this.gtaoPass.updateGtaoMaterial({ samples: quality === 'ultra' ? 14 : 10 });
+      this.gtaoPass.updateGtaoMaterial({ samples: quality === 'ultra' ? 16 : 12 });
       this.bloomPass.enabled = true;
-      this.bloomPass.strength = quality === 'ultra' ? 0.12 : 0.09;
+      // Creamier highlight roll-off: wider radius + slightly stronger core on ultra
+      this.bloomPass.strength = quality === 'ultra' ? 0.17 : 0.11;
+      this.bloomPass.radius = quality === 'ultra' ? 0.42 : 0.36;
       this.shaftsPass.uniforms.uHasDepth.value = 1.0;
-      this.shaftsPass.uniforms.uStrength.value = quality === 'ultra' ? 1.0 : 0.72;
+      this.shaftsPass.uniforms.uStrength.value = quality === 'ultra' ? 1.15 : 0.80;
       this.gradePass.uniforms.uHasDepth.value = 1.0;
-      this.gradePass.uniforms.uSharpness.value = quality === 'ultra' ? 0.46 : 0.40;
+      this.gradePass.uniforms.uSharpness.value = quality === 'ultra' ? 0.52 : 0.42;
       this.gradePass.uniforms.uGradeStrength.value = 1.0;
     }
   }
