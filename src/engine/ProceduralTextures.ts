@@ -652,32 +652,18 @@ export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
 }
 
 /**
- * Photographic CC0 PBR ground textures (ambientCG, mirrored on GitHub) loaded from
- * public/textures/. Textures are created synchronously and stream in async — callers
- * should fade their effect in via `set.loaded`. Albedo maps are sRGB, normals linear.
+ * Photographic CC0 PBR ground textures (ambientCG, mirrored on GitHub) packed into two
+ * 2048px quadrant atlases (lawn / rough / sand / rock) in public/textures/.
+ * Atlasing keeps the terrain shader at ~13 fragment texture units — 8 separate samplers
+ * exceeded the 16-unit WebGL limit once CSM shadow maps + IBL were counted, which made
+ * the terrain program fail to link on many GPUs (ocean showed through instead).
+ * Textures stream in async — callers fade their effect in via `set.loaded`.
  */
 export interface PhotoTextureSet {
-  lawnColor: THREE.Texture;
-  lawnNormal: THREE.Texture;
-  roughColor: THREE.Texture;
-  roughNormal: THREE.Texture;
-  sandColor: THREE.Texture;
-  sandNormal: THREE.Texture;
-  rockColor: THREE.Texture;
-  rockNormal: THREE.Texture;
+  colorAtlas: THREE.Texture;
+  normalAtlas: THREE.Texture;
   loaded: boolean;
 }
-
-const PHOTO_TEXTURE_FILES: Record<string, { file: string; srgb: boolean }> = {
-  lawnColor: { file: 'grass-lawn-color.jpg', srgb: true },
-  lawnNormal: { file: 'grass-lawn-normal.jpg', srgb: false },
-  roughColor: { file: 'grass-rough-color.jpg', srgb: true },
-  roughNormal: { file: 'grass-rough-normal.jpg', srgb: false },
-  sandColor: { file: 'sand-color.jpg', srgb: true },
-  sandNormal: { file: 'sand-normal.jpg', srgb: false },
-  rockColor: { file: 'rock-color.jpg', srgb: true },
-  rockNormal: { file: 'rock-normal.jpg', srgb: false },
-};
 
 export function loadPhotoTextures(
   maxAnisotropy: number,
@@ -685,16 +671,19 @@ export function loadPhotoTextures(
 ): PhotoTextureSet {
   const manager = new THREE.LoadingManager();
   const loader = new THREE.TextureLoader(manager);
-  const out: Record<string, THREE.Texture> = {};
-  for (const [key, def] of Object.entries(PHOTO_TEXTURE_FILES)) {
-    const t = loader.load(`/textures/${def.file}`);
+  const mk = (file: string, srgb: boolean): THREE.Texture => {
+    const t = loader.load(`/textures/${file}`);
     t.wrapS = THREE.RepeatWrapping;
     t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = maxAnisotropy;
-    t.colorSpace = def.srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    out[key] = t;
-  }
-  const set = { ...(out as unknown as Omit<PhotoTextureSet, 'loaded'>), loaded: false } as PhotoTextureSet;
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    return t;
+  };
+  const set: PhotoTextureSet = {
+    colorAtlas: mk('ground-color-atlas.jpg', true),
+    normalAtlas: mk('ground-normal-atlas.jpg', false),
+    loaded: false,
+  };
   manager.onLoad = () => {
     set.loaded = true;
     onReady(set);
