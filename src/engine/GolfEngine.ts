@@ -700,6 +700,45 @@ export class GolfEngine {
     this.cameraSys.setInputLocked(locked);
   }
 
+  /**
+   * Mobile swipe gesture: lightweight predicted-landing ring (no arc line — the blue
+   * trace stays hidden). Callers throttle to ~10 Hz; uses current steered aim and the
+   * pro shaping inputs. For putts the ring marks the predicted stop point.
+   */
+  public updateSwipeLandingPreview(powerRatio: number): void {
+    if (this.playState !== 'ready') return;
+    const surf = this.sampler.getSurface(this.ballPos.x, this.ballPos.z);
+    const norm = this.sampler.getNormal(this.ballPos.x, this.ballPos.z);
+    const isPutt = this.selectedClub.category === 'putter';
+    const pred = simulateFullShot(
+      this.ballPos,
+      {
+        club: this.selectedClub,
+        aimYawRad: this.aimYawRad,
+        powerRatio,
+        clubPathDeg: this.lastPreviewInputs.clubPathDeg,
+        faceAngleDeg: this.lastPreviewInputs.faceAngleDeg,
+        attackAngleDeg: this.selectedClub.tourAttackAngleDeg + this.lastPreviewInputs.attackAngleDeg,
+        dynamicLoftDeltaDeg: this.lastPreviewInputs.dynamicLoftDeltaDeg,
+        strikeOffsetXMm: this.lastPreviewInputs.strikeOffsetXMm,
+        strikeOffsetYMm: this.lastPreviewInputs.strikeOffsetYMm,
+        surface: surf,
+        terrainNormal: norm,
+      },
+      this.wind,
+      this.sampler,
+      COASTAL_STANDARD_ATMOSPHERE
+    );
+    const rollPts = isPutt ? pred.rollPoints : [];
+    const end =
+      isPutt && rollPts.length > 0 ? rollPts[rollPts.length - 1] : pred.landingPosition;
+    this.visualAids.updateLandingHint(end, this.sampler);
+  }
+
+  public clearSwipeLandingPreview(): void {
+    this.visualAids.updateLandingHint(null, this.sampler);
+  }
+
   private lastPreviewInputs = {
     powerRatio: 1.0,
     clubPathDeg: 0,
@@ -789,6 +828,7 @@ export class GolfEngine {
 
     this.animPathDeg = input.clubPathDeg;
     this.playState = 'swinging';
+    this.clearSwipeLandingPreview();
     if (this.modelsSys.golferLoaded && this.walkInElapsedS < this.walkInDurationS) {
       this.animPhase = 'walk_in';
     } else {

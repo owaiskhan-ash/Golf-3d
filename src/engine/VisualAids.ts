@@ -7,6 +7,8 @@ export class VisualAidsSystem {
   private tracerTube: THREE.Mesh | null = null;
   private previewLine: THREE.Line | null = null;
   private landingRing: THREE.Mesh;
+  /** True while the mobile swipe gesture owns the landing ring (preview passes leave it alone). */
+  private landingHintActive = false;
   private aimGroundLine: THREE.Line | null = null;
   private tracerHistory: THREE.Object3D[] = [];
   private dispersionMarkers: THREE.Mesh[] = [];
@@ -48,7 +50,8 @@ export class VisualAidsSystem {
     }
 
     if (!visible || points.length < 2) {
-      this.landingRing.visible = false;
+      // Don't stomp the swipe landing hint — it owns the ring mid-gesture
+      if (!this.landingHintActive) this.landingRing.visible = false;
       return;
     }
 
@@ -67,6 +70,7 @@ export class VisualAidsSystem {
     this.scene.add(line);
 
     if (landingPos && !isPutt) {
+      (this.landingRing.material as THREE.MeshBasicMaterial).color.set(0x38bdf8);
       const ly = sampler.getHeight(landingPos.x, landingPos.z) + 0.08;
       this.landingRing.position.set(landingPos.x, ly, landingPos.z);
       const n = sampler.getNormal(landingPos.x, landingPos.z);
@@ -75,9 +79,30 @@ export class VisualAidsSystem {
         new THREE.Vector3(n.x, n.y, n.z)
       );
       this.landingRing.visible = true;
-    } else {
+    } else if (!this.landingHintActive) {
       this.landingRing.visible = false;
     }
+  }
+
+  /**
+   * Mobile swipe gesture: show ONLY a predicted-landing ring (no blue arc line).
+   * Emerald tint distinguishes it from the desktop aim preview. Pass null to clear.
+   */
+  public updateLandingHint(landingPos: Vec3 | null, sampler: HoleTerrainSampler): void {
+    this.landingHintActive = landingPos !== null;
+    if (!landingPos) {
+      this.landingRing.visible = false;
+      return;
+    }
+    (this.landingRing.material as THREE.MeshBasicMaterial).color.set(0x34d399);
+    const ly = sampler.getHeight(landingPos.x, landingPos.z) + 0.08;
+    this.landingRing.position.set(landingPos.x, ly, landingPos.z);
+    const n = sampler.getNormal(landingPos.x, landingPos.z);
+    this.landingRing.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(n.x, n.y, n.z)
+    );
+    this.landingRing.visible = true;
   }
 
   public updateLiveTracer(points: Vec3[], keepRibbon = true): void {

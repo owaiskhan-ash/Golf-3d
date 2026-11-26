@@ -58,6 +58,23 @@ export const App: React.FC = () => {
     shotType: 'full',
     proDrawerOpen: false,
   });
+  // Swipe steering sensitivity (persisted; mobile)
+  const [swipeSensitivityDeg, setSwipeSensitivityDeg] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('mls.swipeSensitivity'));
+      return v >= 6 && v <= 20 ? v : 12;
+    } catch {
+      return 12;
+    }
+  });
+  const handleSwipeSensitivity = (deg: number) => {
+    setSwipeSensitivityDeg(deg);
+    try {
+      localStorage.setItem('mls.swipeSensitivity', String(deg));
+    } catch {
+      /* storage unavailable */
+    }
+  };
 
   // Mobile gameplay: lock the camera (the swipe-to-swing gesture owns the touchscreen)
   // and hide the blue aim-trace line so the viewport stays clean and immersive.
@@ -274,6 +291,9 @@ export const App: React.FC = () => {
             onStopReplay={() => engineRef.current?.stopReplay()}
             onContinueHoled={handleContinueHoled}
             onUiStateChange={setSwingUi}
+            onSwipePreview={(p) => engineRef.current?.updateSwipeLandingPreview(p)}
+            onSwipePreviewEnd={() => engineRef.current?.clearSwipeLandingPreview()}
+            swipeSensitivityDeg={swipeSensitivityDeg}
           />
 
           <ClubSelector
@@ -327,6 +347,7 @@ export const App: React.FC = () => {
             soundEnabled={soundEnabled}
             aimPreviewEnabled={aimPreviewEnabled}
             proTracerEnabled={proTracerEnabled}
+            swipeSensitivityDeg={swipeSensitivityDeg}
             onPlayerNameChange={(name) => setCareerProfile(updatePlayerName(name))}
             onDifficulty={(d) => {
               setDifficulty(d);
@@ -357,6 +378,7 @@ export const App: React.FC = () => {
               setProTracerEnabled(en);
               engineRef.current?.setProTracerEnabled(en);
             }}
+            onSwipeSensitivityChange={handleSwipeSensitivity}
             onClose={() => setSettingsOpen(false)}
           />
         </>
