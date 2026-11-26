@@ -235,8 +235,11 @@ export class GolfEngine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.AgXToneMapping;
-    this.renderer.toneMappingExposure = 0.50;
+    // AgX is beautifully filmic but desaturates foliage greens by design, which fights the
+    // coastal turf palette. Khronos PBR Neutral holds turf chroma while still rolling
+    // highlights off smoothly, so it is a better fit for a saturated outdoor scene.
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 0.62;
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -244,7 +247,7 @@ export class GolfEngine {
     const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy());
     this.textures = createCourseTextures(maxAniso);
     // Photographic CC0 PBR ground textures stream in async and fade onto the terrain when ready
-    this.photoTextures = loadPhotoTextures(maxAniso, (set) => {
+    this.photoTextures = loadPhotoTextures(this.renderer, maxAniso, (set) => {
       this.terrainSys.setPhotoTextures(set);
     });
     this.skySys = new SkyAtmosphereSystem(this.scene, this.renderer, this.cameraSys.camera);
@@ -1733,6 +1736,7 @@ export class GolfEngine {
     this.visualAids.dispose();
     this.skySys.dispose();
     this.textures.dispose();
+    this.photoTextures.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);

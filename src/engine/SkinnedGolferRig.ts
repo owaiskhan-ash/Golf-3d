@@ -554,7 +554,7 @@ export class SkinnedGolferRig {
     mat: THREE.MeshPhysicalMaterial,
     poreMap: THREE.Texture
   ): void {
-    mat.customProgramCacheKey = () => 'head-skin-hd-v5';
+    mat.customProgramCacheKey = () => 'head-skin-hd-v6-zoned-pores';
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uDermalNorm = { value: poreMap };
       shader.vertexShader = shader.vertexShader
@@ -568,16 +568,28 @@ export class SkinnedGolferRig {
           float eyeRegion = step(vHeadUv.x, 0.34) * step(0.87, vHeadUv.y);
           // Subtle upper-eyelid ambient shadow gradient on eye sockets for natural depth
           float upperLidAO = 1.0 - eyeRegion * smoothstep(0.952, 0.996, vHeadUv.y) * 0.34;
-          vec3 poreSample = texture2D(uDermalNorm, vHeadUv * 34.0).xyz;
-          diffuseColor.rgb *= (mix(0.955, 1.045, poreSample.y) * (1.0 - eyeRegion) + eyeRegion) * upperLidAO;`
+          // Pore zones: the nose and cheeks carry visibly larger, deeper pores than the
+          // forehead and jaw, so a single uniform tiling made the whole face read as one
+          // plastic sheet. Two frequencies are crossfaded by a UV-space zone mask.
+          float noseZone = smoothstep(0.30, 0.05, abs(vHeadUv.x - 0.52)) * smoothstep(0.30, 0.55, vHeadUv.y);
+          float cheekZone = smoothstep(0.26, 0.50, vHeadUv.y) * (1.0 - noseZone);
+          float poreScale = 26.0 + noseZone * 22.0 + cheekZone * 8.0;
+          vec3 poreSample = texture2D(uDermalNorm, vHeadUv * poreScale).xyz;
+          float poreDepth = mix(0.85, 1.25, noseZone);
+          diffuseColor.rgb *= (mix(0.955, 1.045, poreSample.y * poreDepth) * (1.0 - eyeRegion) + eyeRegion) * upperLidAO;`
         )
         .replace(
           '#include <normal_fragment_maps>',
           `#include <normal_fragment_maps>
           #ifdef USE_NORMALMAP_TANGENTSPACE
             float nEye = step(vHeadUv.x, 0.34) * step(0.87, vHeadUv.y);
-            vec3 microPore = texture2D(uDermalNorm, vHeadUv * 34.0).xyz * 2.0 - 1.0;
-            normal = normalize(normal + (tbn * vec3(microPore.xy * 0.38 * (1.0 - nEye), 0.0)));
+            float nNose = smoothstep(0.30, 0.05, abs(vHeadUv.x - 0.52)) * smoothstep(0.30, 0.55, vHeadUv.y);
+            float nCheek = smoothstep(0.26, 0.50, vHeadUv.y) * (1.0 - nNose);
+            float nScale = 26.0 + nNose * 22.0 + nCheek * 8.0;
+            vec3 microPore = texture2D(uDermalNorm, vHeadUv * nScale).xyz * 2.0 - 1.0;
+            // Larger pores on nose/cheeks -> stronger perturbation, matching the albedo pass
+            float poreAmp = 0.30 + nNose * 0.26 + nCheek * 0.08;
+            normal = normalize(normal + (tbn * vec3(microPore.xy * poreAmp * (1.0 - nEye), 0.0)));
           #endif`
         )
         .replace(

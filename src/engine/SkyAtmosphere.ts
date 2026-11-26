@@ -35,7 +35,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     rayleigh: 1.95,
     mieCoefficient: 0.0095,
     mieDirectionalG: 0.85,
-    exposure: 0.50,
+    exposure: 0.62,
     fogColor: 0xcbd9e2,
     fogDensity: 0.00128,
     sunColor: 0xffebd0,
@@ -56,7 +56,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     rayleigh: 1.38,
     mieCoefficient: 0.005,
     mieDirectionalG: 0.82,
-    exposure: 0.50,
+    exposure: 0.62,
     fogColor: 0xbad6eb,
     fogDensity: 0.00062,
     sunColor: 0xfff3dc,
@@ -77,7 +77,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     rayleigh: 2.75,
     mieCoefficient: 0.0115,
     mieDirectionalG: 0.89,
-    exposure: 0.55,
+    exposure: 0.68,
     fogColor: 0xe2b690,
     fogDensity: 0.00105,
     sunColor: 0xffb870,
@@ -98,7 +98,7 @@ export const TIME_OF_DAY_PRESETS: Record<TimeOfDayPreset, AtmosphereConfig> = {
     rayleigh: 3.35,
     mieCoefficient: 0.0145,
     mieDirectionalG: 0.90,
-    exposure: 0.56,
+    exposure: 0.70,
     fogColor: 0x777396,
     fogDensity: 0.00130,
     sunColor: 0xff8254,
@@ -390,6 +390,7 @@ export class SkyAtmosphereSystem {
     this.oceanBounceLight.color.setHex(cfg.bounceColor);
     this.oceanBounceLight.intensity = cfg.bounceIntensity;
 
+    // Exposure is pre-compensated for NeutralToneMapping (see GolfEngine constructor).
     this.renderer.toneMappingExposure = cfg.exposure;
     const hdrFogColor = new THREE.Color(cfg.fogColor).multiplyScalar(1.12);
     this.scene.fog = new THREE.FogExp2(hdrFogColor.getHex(), cfg.fogDensity);

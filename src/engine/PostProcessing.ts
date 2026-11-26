@@ -419,7 +419,11 @@ export class PostProcessingPipeline {
       this.shaftsPass.uniforms.uHasDepth.value = 1.0;
       this.shaftsPass.uniforms.uStrength.value = quality === 'ultra' ? 1.15 : 0.80;
       this.gradePass.uniforms.uHasDepth.value = 1.0;
-      this.gradePass.uniforms.uSharpness.value = quality === 'ultra' ? 0.52 : 0.42;
+      // CAS cannot recover detail that was never sampled, and over-sharpening is exactly
+      // what makes procedural grass look crunchy. With the packed KTX2 detail layers doing
+      // the work now (per-material relief height, real photographic normals), the sharpener
+      // can sit lower and look cleaner.
+      this.gradePass.uniforms.uSharpness.value = quality === 'ultra' ? 0.40 : 0.32;
       this.gradePass.uniforms.uGradeStrength.value = 1.0;
     }
   }

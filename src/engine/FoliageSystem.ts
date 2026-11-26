@@ -917,7 +917,13 @@ export class FoliageSystem {
     ): THREE.MeshStandardMaterial => {
       const mat = new THREE.MeshStandardMaterial({
         map,
-        alphaTest: 0.35,
+        // Alpha-to-coverage lets the MSAA target (up to 4 samples, allocated in
+        // PostProcessing) resolve the needle cutout analytically instead of a hard
+        // binary discard. That kills the crawling/thinning edges and the white fringing
+        // you get from alphaTest + mipmaps at distance. The threshold can come down
+        // sharply because coverage now handles the soft transition.
+        alphaTest: 0.12,
+        alphaToCoverage: true,
         vertexColors: true,
         side: THREE.DoubleSide,
         roughness,
@@ -978,6 +984,31 @@ export class FoliageSystem {
           `
           )
           .replace(
+            '#include <normal_fragment_maps>',
+            /* glsl */ `
+            #include <normal_fragment_maps>
+            // The needle sprays ship as albedo + alpha only, which leaves every frond
+            // perfectly flat-shaded (no normal map, no tangent basis). Derive needle-sized
+            // relief cheaply in-shader from the luminance of the spray card: dense needle
+            // cores read convex, the soft gaps between fascicles read concave, so the
+            // canopy catches light like geometry.
+            {
+              float lTexel = 1.0 / 512.0;
+              float lC = dot(texture2D(map, vLeafUv).rgb, vec3(0.2126, 0.7152, 0.0722));
+              float lX = dot(texture2D(map, vLeafUv + vec2(lTexel, 0.0)).rgb, vec3(0.2126, 0.7152, 0.0722));
+              float lY = dot(texture2D(map, vLeafUv + vec2(0.0, lTexel)).rgb, vec3(0.2126, 0.7152, 0.0722));
+              float lA = texture2D(map, vLeafUv).a;
+              vec2 slope = vec2(lX - lC, lY - lC) * 2.0 + vec2(1.0 - lA) * 0.35;
+              // View-space basis around the geometric normal (no TBN is available here
+              // because the canopy carries no tangent-space normal map).
+              vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+              vec3 rightV = normalize(cross(upV, normal) + vec3(1e-5));
+              vec3 upT = cross(normal, rightV);
+              normal = normalize(normal - (rightV * slope.x + upT * slope.y) * 1.65);
+            }
+          `
+          )
+          .replace(
             '#include <lights_fragment_end>',
             /* glsl */ `
             #include <lights_fragment_end>
@@ -1025,13 +1056,15 @@ export class FoliageSystem {
     const cypressDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: this.textures.cypressFoliageMap,
-      alphaTest: 0.35,
+      alphaTest: 0.12,
+      alphaToCoverage: true,
       side: THREE.DoubleSide,
     });
     const pineDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: this.textures.pineFoliageMap,
-      alphaTest: 0.35,
+      alphaTest: 0.12,
+      alphaToCoverage: true,
       side: THREE.DoubleSide,
     });
 
