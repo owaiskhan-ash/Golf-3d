@@ -3,7 +3,6 @@ import { COURSE_HOLES } from './course/courseData';
 import type { DifficultyMode } from './course/types';
 import { GolfEngine, type EngineSnapshot, type HoleRoundMeta } from './engine/GolfEngine';
 import { loadingTracker, type LoadingState } from './engine/loadingTracker';
-import type { GraphicsQuality } from './engine/PostProcessing';
 import type { TimeOfDayPreset } from './engine/SkyAtmosphere';
 import {
   loadCareerProfile,
@@ -38,8 +37,7 @@ export const App: React.FC = () => {
   const [scorecardOpen, setScorecardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDayPreset>('coastal_noon');
-  const [quality, setQuality] = useState<GraphicsQuality>('ultra');
-  const [autoQualityEnabled, setAutoQualityEnabled] = useState(true);
+  // Graphics quality is locked to ULTRA (engine default) — no user toggle
   const [difficulty, setDifficulty] = useState<DifficultyMode>('pro');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [aimPreviewEnabled, setAimPreviewEnabled] = useState(true);
@@ -97,7 +95,6 @@ export const App: React.FC = () => {
 
     const unsub = engine.subscribe((next) => {
       setSnap(next);
-      setQuality(next.qualityLevel);
       setDifficulty(next.difficulty);
       setProTracerEnabled(next.proTracerEnabled);
       setAimPreviewEnabled(engine.showAimPreview);
@@ -168,10 +165,7 @@ export const App: React.FC = () => {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.code === 'KeyG') {
-        const cur = engine.greenGridVisible;
-        engine.setGreenGridVisible(!cur);
-      } else if (e.code === 'KeyF') {
+      if (e.code === 'KeyF') {
         engine.toggleFlagstick();
       } else if (e.code === 'KeyR') {
         engine.resetToTee();
@@ -234,9 +228,6 @@ export const App: React.FC = () => {
               onSelectHole={(id) => engineRef.current?.loadHole(id)}
               onCameraMode={(m) => engineRef.current?.setCameraMode(m)}
               onDifficulty={(d) => engineRef.current?.setDifficulty(d)}
-              onToggleGreenGrid={() =>
-                engineRef.current?.setGreenGridVisible(!snap.greenGridVisible)
-              }
               onToggleFlagstick={() => engineRef.current?.toggleFlagstick()}
               onMulligan={() => engineRef.current?.takeMulligan()}
               onUnplayableDrop={() => engineRef.current?.takeUnplayableDrop()}
@@ -259,9 +250,6 @@ export const App: React.FC = () => {
                 onSelectHole={(id) => engineRef.current?.loadHole(id)}
                 onCameraMode={(m) => engineRef.current?.setCameraMode(m)}
                 onDifficulty={(d) => engineRef.current?.setDifficulty(d)}
-                onToggleGreenGrid={() =>
-                  engineRef.current?.setGreenGridVisible(!snap.greenGridVisible)
-                }
                 onToggleFlagstick={() => engineRef.current?.toggleFlagstick()}
                 onMulligan={() => engineRef.current?.takeMulligan()}
                 onUnplayableDrop={() => engineRef.current?.takeUnplayableDrop()}
@@ -340,8 +328,6 @@ export const App: React.FC = () => {
             playerName={careerProfile.playerName}
             difficulty={difficulty}
             timeOfDay={timeOfDay}
-            quality={quality}
-            autoQualityEnabled={autoQualityEnabled}
             windSpeedMph={snap.wind.speedMps * 2.23694}
             windDirDeg={(snap.wind.directionRad * 180) / Math.PI}
             soundEnabled={soundEnabled}
@@ -356,14 +342,6 @@ export const App: React.FC = () => {
             onTimeOfDay={(p) => {
               setTimeOfDay(p);
               engineRef.current?.setTimeOfDay(p);
-            }}
-            onQuality={(q) => {
-              setQuality(q);
-              engineRef.current?.setGraphicsQuality(q);
-            }}
-            onAutoQualityToggle={(en) => {
-              setAutoQualityEnabled(en);
-              engineRef.current?.setAutoQualityEnabled(en);
             }}
             onWindChange={(mph, deg) => engineRef.current?.setWind(mph, deg)}
             onSoundToggle={(en) => {

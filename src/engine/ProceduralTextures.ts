@@ -650,3 +650,58 @@ export function createCourseTextures(maxAnisotropy = 8): CourseTextureSet {
     },
   };
 }
+
+/**
+ * Photographic CC0 PBR ground textures (ambientCG, mirrored on GitHub) loaded from
+ * public/textures/. Textures are created synchronously and stream in async — callers
+ * should fade their effect in via `set.loaded`. Albedo maps are sRGB, normals linear.
+ */
+export interface PhotoTextureSet {
+  lawnColor: THREE.Texture;
+  lawnNormal: THREE.Texture;
+  roughColor: THREE.Texture;
+  roughNormal: THREE.Texture;
+  sandColor: THREE.Texture;
+  sandNormal: THREE.Texture;
+  rockColor: THREE.Texture;
+  rockNormal: THREE.Texture;
+  loaded: boolean;
+}
+
+const PHOTO_TEXTURE_FILES: Record<string, { file: string; srgb: boolean }> = {
+  lawnColor: { file: 'grass-lawn-color.jpg', srgb: true },
+  lawnNormal: { file: 'grass-lawn-normal.jpg', srgb: false },
+  roughColor: { file: 'grass-rough-color.jpg', srgb: true },
+  roughNormal: { file: 'grass-rough-normal.jpg', srgb: false },
+  sandColor: { file: 'sand-color.jpg', srgb: true },
+  sandNormal: { file: 'sand-normal.jpg', srgb: false },
+  rockColor: { file: 'rock-color.jpg', srgb: true },
+  rockNormal: { file: 'rock-normal.jpg', srgb: false },
+};
+
+export function loadPhotoTextures(
+  maxAnisotropy: number,
+  onReady: (set: PhotoTextureSet) => void
+): PhotoTextureSet {
+  const manager = new THREE.LoadingManager();
+  const loader = new THREE.TextureLoader(manager);
+  const out: Record<string, THREE.Texture> = {};
+  for (const [key, def] of Object.entries(PHOTO_TEXTURE_FILES)) {
+    const t = loader.load(`/textures/${def.file}`);
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAnisotropy;
+    t.colorSpace = def.srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    out[key] = t;
+  }
+  const set = { ...(out as unknown as Omit<PhotoTextureSet, 'loaded'>), loaded: false } as PhotoTextureSet;
+  manager.onLoad = () => {
+    set.loaded = true;
+    onReady(set);
+  };
+  manager.onError = (url) => {
+    // Leave photographic layer disabled on failure — procedural fallback stays fully intact
+    console.warn('[PhotoTextures] failed to load', url);
+  };
+  return set;
+}

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { clamp } from '../course/noise';
 import type { HoleTerrainSampler } from '../course/terrainSampler';
-import type { CourseTextureSet } from './ProceduralTextures';
+import type { CourseTextureSet, PhotoTextureSet } from './ProceduralTextures';
 
 /**
  * Generates an adaptive, single-watertight terrain mesh where vertex density concentrates smoothly
@@ -23,8 +23,25 @@ export class TerrainMeshSystem {
 
   constructor(
     private readonly scene: THREE.Scene,
-    private readonly textures: CourseTextureSet
+    private readonly textures: CourseTextureSet,
+    private photo?: PhotoTextureSet
   ) {}
+
+  /** Wires the photographic CC0 PBR texture set once streamed in; fades the layer on. */
+  public setPhotoTextures(set: PhotoTextureSet): void {
+    this.photo = set;
+    if (this.shaderUniforms) {
+      this.shaderUniforms.uLawnColorMap.value = set.lawnColor;
+      this.shaderUniforms.uLawnNormMap.value = set.lawnNormal;
+      this.shaderUniforms.uRoughColorMap.value = set.roughColor;
+      this.shaderUniforms.uRoughNormMap.value = set.roughNormal;
+      this.shaderUniforms.uSandColorMap.value = set.sandColor;
+      this.shaderUniforms.uSandNormMap.value = set.sandNormal;
+      this.shaderUniforms.uRockColorMap.value = set.rockColor;
+      this.shaderUniforms.uRockNormMap.value = set.rockNormal;
+      this.shaderUniforms.uPhotoStrength.value = 1.0;
+    }
+  }
 
   public buildForHole(sampler: HoleTerrainSampler): void {
     this.clearCurrent();
@@ -217,10 +234,20 @@ export class TerrainMeshSystem {
       uCloudCoverage: { value: 0.49 },
       uMistColor: { value: new THREE.Color(0xc0d9eb) },
       uMistDensity: { value: 0.0045 },
+      // Photographic CC0 PBR layer (ambientCG) — strength fades in once JPGs finish decoding
+      uPhotoStrength: { value: this.photo?.loaded ? 1.0 : 0.0 },
+      uLawnColorMap: { value: this.photo?.lawnColor ?? null },
+      uLawnNormMap: { value: this.photo?.lawnNormal ?? null },
+      uRoughColorMap: { value: this.photo?.roughColor ?? null },
+      uRoughNormMap: { value: this.photo?.roughNormal ?? null },
+      uSandColorMap: { value: this.photo?.sandColor ?? null },
+      uSandNormMap: { value: this.photo?.sandNormal ?? null },
+      uRockColorMap: { value: this.photo?.rockColor ?? null },
+      uRockNormMap: { value: this.photo?.rockNormal ?? null },
     };
     this.shaderUniforms = uniforms;
 
-    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v3';
+    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v4-photo';
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
 
@@ -267,10 +294,26 @@ export class TerrainMeshSystem {
           uniform float uCloudCoverage;
           uniform vec3 uMistColor;
           uniform float uMistDensity;
+          uniform float uPhotoStrength;
+          uniform sampler2D uLawnColorMap;
+          uniform sampler2D uLawnNormMap;
+          uniform sampler2D uRoughColorMap;
+          uniform sampler2D uRoughNormMap;
+          uniform sampler2D uSandColorMap;
+          uniform sampler2D uSandNormMap;
+          uniform sampler2D uRockColorMap;
+          uniform sampler2D uRockNormMap;
 
           varying vec3 vTerrainWorldPos;
           varying vec3 vTerrainWorldNormal;
           varying float vTerrainAO;
+
+          // Hue/chroma of a photographic sample, luminance-normalized so the procedural
+          // palette keeps control of brightness while the photo drives realistic hue
+          vec3 tPhotoHue(vec3 c) {
+            float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            return c / max(l, 0.045);
+          }
 
           float tHash(vec2 p) {
             p = fract(p * vec2(234.34, 435.345));
@@ -328,6 +371,22 @@ export class TerrainMeshSystem {
           float bladePigment = mix(gMacro.g * 0.5 + gBlade.g * 0.5, gBlade.g * 0.62 + gMicro.g * 0.38, nearMicro);
           float bladeThatch = mix(gMacro.b, gBlade.b * 0.72 + gMicro.b * 0.28, nearMicro);
 
+          // Photographic PBR samples (CC0 ambientCG): real lawn/meadow/sandstone albedo.
+          // bladeHeight/pigment/thatch blend toward photo-derived values so every downstream
+          // turf recipe (rough, first cut, fairway, green) inherits photographic structure.
+          vec3 pLawnBlade = texture2D(uLawnColorMap, rotXZ * 0.55 + vec2(0.19, 0.41)).rgb;
+          vec3 pLawnMacro = texture2D(uLawnColorMap, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23)).rgb;
+          vec3 pRough = texture2D(uRoughColorMap, vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11)).rgb;
+          vec3 pSand = texture2D(uSandColorMap, vTerrainWorldPos.xz * 0.5).rgb;
+          vec3 pRock = texture2D(uRockColorMap, (vTerrainWorldNormal.y < 0.7
+            ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
+            : vTerrainWorldPos.xz) * 0.22).rgb;
+          float pLawnH = dot(pLawnBlade, vec3(0.2126, 0.7152, 0.0722));
+          float pLawnMacroLum = dot(pLawnMacro, vec3(0.2126, 0.7152, 0.0722));
+          float pRoughLum = dot(pRough, vec3(0.2126, 0.7152, 0.0722));
+          bladeHeight = mix(bladeHeight, mix(bladeHeight, pLawnH * 1.15, 0.65), uPhotoStrength);
+          bladeThatch = mix(bladeThatch, mix(bladeThatch, 1.0 - pLawnH, 0.4), uPhotoStrength);
+
           // Organic blade-frayed turf encroachment along bunker lips, collars & paths
           float edgeNoise = (tFbm(vTerrainWorldPos.xz * 0.48) - 0.5) * 0.14 + (gBlade.r - 0.5) * 0.08 * nearMicro;
 
@@ -360,6 +419,9 @@ export class TerrainMeshSystem {
           vec3 roughSoil = vec3(0.048, 0.046, 0.028);
           vec3 roughCol = mix(roughSoil, mix(roughBase, roughTips, bladePigment), roughCavity);
           roughCol *= 0.88 + 0.20 * fineBlade;
+          // Photographic meadow fescue: real photo hue + luminance structure, green-shifted to coastal rough
+          vec3 roughPhotoCol = pRough * vec3(0.60, 0.72, 0.46) * (0.72 + 0.56 * macroVar);
+          roughCol = mix(roughCol, roughPhotoCol, uPhotoStrength * 0.85);
 
           vec3 fcSoil = vec3(0.046, 0.072, 0.030);
           vec3 fcBlade = mix(vec3(0.078, 0.202, 0.056), vec3(0.128, 0.278, 0.084), bladePigment) * (0.90 + 0.14 * microVar);
@@ -380,6 +442,9 @@ export class TerrainMeshSystem {
           fwBladeCol = mix(fwBladeCol, vec3(0.165, 0.335, 0.102), bladeThatch * 0.14);
           vec3 fwCol = mix(fwThatch, fwBladeCol, smoothstep(0.04, 0.56, mix(0.65, bladeHeight, 0.78 + 0.22 * nearMicro)));
           fwCol *= (0.92 + 0.14 * microVar) * bladeStreak;
+          // Photographic lawn hue + real luminance patchiness; mowing stripes stay layered on top
+          vec3 fwPhotoCol = fwCol * tPhotoHue(pLawnBlade) * (0.40 + pLawnH * 1.72) * (0.84 + pLawnMacroLum * 0.45);
+          fwCol = mix(fwCol, fwPhotoCol, uPhotoStrength * 0.8);
 
           // 3. Putting Green (tightly rolled coastal Poa annua & creeping bentgrass micro-checkerboard) + Fringe
           float gCheckX = smoothstep(-0.25, 0.25, sin((rotX + rotZ * 0.35) * 2.1));
@@ -391,6 +456,8 @@ export class TerrainMeshSystem {
           vec3 greenCol = mix(greenDark, greenLight, gPattern);
           greenCol = mix(greenCol, vec3(0.205, 0.415, 0.132), poaSpeck * nearMicro);
           greenCol = mix(greenCol * 0.72, greenCol, smoothstep(0.0, 0.36, mix(0.75, gMicro.r, nearMicro)));
+          // Photographic bentgrass hue for the putting surface (subtle — checkerboard stays dominant)
+          greenCol = mix(greenCol, greenCol * tPhotoHue(pLawnBlade) * (0.52 + pLawnH * 1.42), uPhotoStrength * 0.7);
           vec3 fringeCol = mix(vec3(0.080, 0.255, 0.066) * (0.90 + 0.20 * bladePigment), greenCol, 0.42);
 
           // 4. Coastal White-Gold Silica Bunker Sand + damp wall margin + micro quartz sparkle
@@ -400,6 +467,9 @@ export class TerrainMeshSystem {
           float silicaGlint = smoothstep(0.91, 0.99, ultraBlade) * 0.14;
           vec3 bunkerCol = mix(sandDamp, sandDry, 0.45 + 0.45 * microVar - wBunkerEdge * 0.38);
           bunkerCol = bunkerCol * (0.91 + 0.11 * rakeGroove) + vec3(silicaGlint);
+          // Real coastal bunker sand albedo (lumpy unraked texture), rake grooves preserved
+          vec3 sandPhotoCol = pSand * vec3(1.30, 1.20, 1.02) * (0.80 + 0.20 * rakeGroove);
+          bunkerCol = mix(bunkerCol, sandPhotoCol, uPhotoStrength * 0.9);
 
           // 5. Gravel / Stone Maintenance Path
           vec3 pathCol = mix(vec3(0.35, 0.32, 0.27), vec3(0.47, 0.43, 0.37), fineBlade);
@@ -429,6 +499,9 @@ export class TerrainMeshSystem {
           vec3 rockBase = mix(vec3(0.20, 0.18, 0.15), vec3(0.49, 0.42, 0.35), strata * 0.65 + rockRelief * 0.35);
           rockBase *= (0.74 + 0.28 * strataCracks) * mix(0.68, 1.12, rockRelief);
           rockBase = mix(rockBase, vec3(0.18, 0.23, 0.13), smoothstep(0.68, 0.95, vTerrainWorldNormal.y) * 0.58);
+          // Photographic warm Monterey sandstone albedo with real fissure structure
+          vec3 rockPhotoCol = pRock * vec3(1.18, 1.04, 0.86) * (0.70 + 0.30 * strataCracks);
+          rockBase = mix(rockBase, rockPhotoCol, uPhotoStrength * 0.85);
           float tidalWet = 1.0 - smoothstep(0.6, 3.6, vTerrainWorldPos.y + microVar * 0.8);
           float saltCrust = smoothstep(3.2, 4.4, vTerrainWorldPos.y) * (1.0 - smoothstep(4.4, 6.2, vTerrainWorldPos.y)) * smoothstep(0.55, 0.85, microVar);
           rockBase = mix(rockBase, rockBase * 1.18 + vec3(0.05), saltCrust * 0.45);
@@ -558,6 +631,16 @@ export class TerrainMeshSystem {
             cliffUv -= pOff * (0.5 - h1 * 0.5);
           }
           vec3 rNorm = texture2D(uRockNorm, cliffUv).xyz * 2.0 - 1.0;
+
+          // Photographic PBR normal maps (real lawn fiber, lumpy sand, sandstone fissures)
+          if (uPhotoStrength > 0.001) {
+            vec3 gNormPhoto = texture2D(uLawnNormMap, nRot * 0.55 + vec2(0.19, 0.41)).xyz * 2.0 - 1.0;
+            vec3 sNormPhoto = texture2D(uSandNormMap, vTerrainWorldPos.xz * 0.5).xyz * 2.0 - 1.0;
+            vec3 rNormPhoto = texture2D(uRockNormMap, cliffUv * 1.4).xyz * 2.0 - 1.0;
+            gNorm = normalize(mix(gNorm, gNormPhoto, uPhotoStrength * 0.80));
+            sNorm = normalize(mix(sNorm, sNormPhoto, uPhotoStrength * 0.85));
+            rNorm = normalize(mix(rNorm, rNormPhoto, uPhotoStrength * 0.90));
+          }
 
           vec2 detailXY = mix(gNorm.xy * mix(0.68, 0.26, nwGreen), sNorm.xy * 0.62, nwBunk);
           detailXY = mix(detailXY, rNorm.xy * 0.95, nwCliff);

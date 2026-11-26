@@ -5,7 +5,6 @@ import {
   Compass,
   Flag,
   Film,
-  Grid3x3,
   LifeBuoy,
   MapPin,
   RotateCcw,
@@ -25,7 +24,6 @@ interface TopBarProps {
   onSelectHole: (id: string) => void;
   onCameraMode: (mode: CameraMode) => void;
   onDifficulty: (diff: DifficultyMode) => void;
-  onToggleGreenGrid: () => void;
   onToggleFlagstick: () => void;
   onMulligan: () => void;
   onUnplayableDrop: () => void;
@@ -57,7 +55,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSelectHole,
   onCameraMode,
   onDifficulty,
-  onToggleGreenGrid,
   onToggleFlagstick,
   onMulligan,
   onUnplayableDrop,
@@ -401,21 +398,6 @@ export const TopBar: React.FC<TopBarProps> = ({
               Course & Shot Tools
             </div>
             <div className="flex flex-col gap-1">
-              <button
-                onClick={onToggleGreenGrid}
-                className={`flex items-center justify-between rounded-xl px-2.5 py-1.5 text-xs font-medium transition ${
-                  snap.greenGridVisible
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <Grid3x3 className="h-3.5 w-3.5" />
-                  Green Slope Grid
-                </span>
-                <span className="text-[10px] opacity-70">G</span>
-              </button>
-
               <button
                 onClick={onToggleFlagstick}
                 className={`flex items-center justify-between rounded-xl px-2.5 py-1.5 text-xs font-medium transition ${
