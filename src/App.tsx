@@ -19,7 +19,7 @@ import { MobileHud } from './ui/MobileHud';
 import { ScorecardModal } from './ui/ScorecardModal';
 import { SettingsModal } from './ui/SettingsModal';
 import { SplashScreen } from './ui/SplashScreen';
-import { SwingControls } from './ui/SwingControls';
+import { SwingControls, type SwingControlsHandle, type SwingUiState } from './ui/SwingControls';
 import { TelemetryPanel } from './ui/TelemetryPanel';
 import { TopBar } from './ui/TopBar';
 import { useIsMobile } from './ui/useIsMobile';
@@ -51,6 +51,13 @@ export const App: React.FC = () => {
     done: false,
   });
   const [splashGone, setSplashGone] = useState(false);
+  // Swing UI mirror + imperative handle so the mobile side menu can drive swing settings
+  const swingControlsRef = useRef<SwingControlsHandle>(null);
+  const [swingUi, setSwingUi] = useState<SwingUiState>({
+    mode: 'swipe_pull',
+    shotType: 'full',
+    proDrawerOpen: false,
+  });
 
   // Mobile gameplay: lock the camera (the swipe-to-swing gesture owns the touchscreen)
   // and hide the blue aim-trace line so the viewport stays clean and immersive.
@@ -222,6 +229,10 @@ export const App: React.FC = () => {
               onOpenScorecard={() => setScorecardOpen(true)}
               onOpenSettings={() => setSettingsOpen(true)}
               onAimWorld={(x, z) => engineRef.current?.setAimTowardsWorld(x, z)}
+              swingUi={swingUi}
+              onSetSwingMode={(m) => swingControlsRef.current?.setMode(m)}
+              onSetShotType={(id) => swingControlsRef.current?.applyShotType(id)}
+              onToggleProDrawer={() => swingControlsRef.current?.toggleProDrawer()}
             />
           ) : (
             <>
@@ -254,6 +265,7 @@ export const App: React.FC = () => {
           )}
 
           <SwingControls
+            ref={swingControlsRef}
             snap={snap}
             onAdjustAim={(d) => engineRef.current?.adjustAim(d)}
             onUpdatePreview={(ov) => engineRef.current?.updatePreviewArc(ov)}
@@ -261,6 +273,7 @@ export const App: React.FC = () => {
             onReplayShot={() => engineRef.current?.replayLastShot()}
             onStopReplay={() => engineRef.current?.stopReplay()}
             onContinueHoled={handleContinueHoled}
+            onUiStateChange={setSwingUi}
           />
 
           <ClubSelector
@@ -268,6 +281,7 @@ export const App: React.FC = () => {
             recommendedClubId={snap.recommendedClubId}
             disabled={snap.playState !== 'ready'}
             onSelectClub={(id) => engineRef.current?.setClub(id)}
+            lifted={!(isMobile && swingUi.mode === 'swipe_pull')}
           />
 
           {/* Camera Controls, Golfer-Locked Orbit Reset & Auto-FPS Note (desktop — mobile shows hints in the side menu) */}

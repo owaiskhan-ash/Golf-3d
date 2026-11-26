@@ -22,19 +22,36 @@ interface SwingControlsProps {
   onReplayShot: () => void;
   onStopReplay: () => void;
   onContinueHoled: () => void;
+  /** Publishes { mode, shotType, proDrawerOpen } whenever they change (drives the mobile side menu). */
+  onUiStateChange?: (ui: SwingUiState) => void;
 }
 
-type SwingInputMode = 'three_click' | 'mouse_drag' | 'pro_sim' | 'swipe_pull';
+export type SwingInputMode = 'three_click' | 'mouse_drag' | 'pro_sim' | 'swipe_pull';
 
-export const SwingControls: React.FC<SwingControlsProps> = ({
-  snap,
-  onAdjustAim,
-  onUpdatePreview,
-  onExecuteShot,
-  onReplayShot,
-  onStopReplay,
-  onContinueHoled,
-}) => {
+export interface SwingUiState {
+  mode: SwingInputMode;
+  shotType: ShotTypeId;
+  proDrawerOpen: boolean;
+}
+
+/** Imperative API so the mobile side-menu drawer can drive swing settings. */
+export interface SwingControlsHandle {
+  setMode: (m: SwingInputMode) => void;
+  applyShotType: (id: ShotTypeId) => void;
+  toggleProDrawer: () => void;
+}
+
+export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControlsProps>(
+  ({
+    snap,
+    onAdjustAim,
+    onUpdatePreview,
+    onExecuteShot,
+    onReplayShot,
+    onStopReplay,
+    onContinueHoled,
+    onUiStateChange,
+  }, ref) => {
   const isMobile = useIsMobile();
   // Mobile defaults to the full-screen swipe pull-angle gesture
   const [mode, setMode] = useState<SwingInputMode>(isMobile ? 'swipe_pull' : 'three_click');
@@ -80,9 +97,19 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     dy: number;
     maxPullPx: number;
   } | null>(null);
-  // Aim yaw at gesture start + last applied yaw, so the pull angle steers the REAL
-  // shot direction live (and can be reverted exactly if the gesture is cancelled).
-  const swipeAimRef = useRef<{ startYaw: number; appliedYaw: number } | null>(null);
+  // Aim yaw at gesture start + applied/desired yaw, so the pull angle steers the REAL
+  // shot direction live (smoothed) and can be reverted exactly if the gesture cancels.
+  const swipeAimRef = useRef<{ startYaw: number; appliedYaw: number; desiredYaw: number } | null>(
+    null
+  );
+  // Last haptic power bucket (0..4) — vibrate a tick whenever a 25% threshold is crossed
+  const swipeHapticBucketRef = useRef(-1);
+
+  /** Pull angle in degrees (0 = straight down), clamped to ±40° with a 2° center deadzone. */
+  const swipeAngleDegOf = (dx: number, dy: number): number => {
+    const a = Math.max(-40, Math.min(40, (Math.atan2(dx, Math.max(30, dy)) * 180) / Math.PI));
+    return Math.abs(a) < 2 ? 0 : a;
+  };
 
   const isReady = snap.playState === 'ready';
   const isPutting = snap.selectedClub.category === 'putter';
@@ -118,6 +145,25 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     setDynamicLoftDeltaDeg(p.dynamicLoftDeltaDeg);
     setAttackAngleDeltaDeg(p.attackAngleDeltaDeg);
   };
+
+  // Let the mobile side-menu drawer drive swing settings
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      setMode: (m) => {
+        setMode(m);
+        setClickStage('idle');
+      },
+      applyShotType,
+      toggleProDrawer: () => setShowProDrawer((v) => !v),
+    }),
+    []
+  );
+
+  // Mirror swing UI state up to App (feeds the mobile side-menu highlights)
+  useEffect(() => {
+    onUiStateChange?.({ mode, shotType, proDrawerOpen: showProDrawer });
+  }, [mode, shotType, showProDrawer, onUiStateChange]);
 
   // Sync Pro Sim sliders to 3D aim preview arc
   useEffect(() => {
@@ -308,11 +354,7 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     swipePowerRatio = isPutting
       ? Math.pow(pullFrac, 1.35)
       : Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06);
-    const angleDeg = Math.max(
-      -40,
-      Math.min(40, (Math.atan2(swipePull.dx, Math.max(30, swipePull.dy)) * 180) / Math.PI)
-    );
-    swipeAimOffsetDeg = (angleDeg / 40) * swipeAimRangeDeg;
+    swipeAimOffsetDeg = (swipeAngleDegOf(swipePull.dx, swipePull.dy) / 40) * swipeAimRangeDeg;
   }
   const swipeColor =
     swipePowerRatio > 0.85 ? '#fbbf24' : swipePowerRatio > 0.5 ? '#34d399' : '#38bdf8';
@@ -323,13 +365,20 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     if (mode !== 'swipe_pull' || !isReady) return;
     if (swipePullRef.current) return; // one-finger gesture — ignore extra touches
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    swipeAimRef.current = { startYaw: snap.aimYawRad, appliedYaw: snap.aimYawRad };
+    swipeAimRef.current = {
+      startYaw: snap.aimYawRad,
+      appliedYaw: snap.aimYawRad,
+      desiredYaw: snap.aimYawRad,
+    };
+    swipeHapticBucketRef.current = -1;
+    // Pull length adapts to the viewport: longer on tall phones (finer control),
+    // workable on short landscape screens.
     const start = {
       startX: e.clientX,
       startY: e.clientY,
       dx: 0,
       dy: 0,
-      maxPullPx: Math.max(170, window.innerHeight * 0.34),
+      maxPullPx: Math.max(180, Math.min(window.innerHeight * 0.38, 420)),
     };
     swipePullRef.current = start;
     setSwipePull(start);
@@ -342,18 +391,31 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
     swipePullRef.current = next;
     setSwipePull(next);
 
-    // Live aim steering: the pull angle rotates the engine's actual aim yaw, so the
-    // locked camera swings with the shot direction while the user drags.
+    // Haptic tick whenever the pull crosses a 25% power threshold
+    const pullFrac = Math.min(1, Math.max(0, next.dy) / next.maxPullPx);
+    const bucket = Math.floor(pullFrac * 4);
+    if (bucket !== swipeHapticBucketRef.current) {
+      swipeHapticBucketRef.current = bucket;
+      if (bucket >= 0 && typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(4);
+        } catch {
+          /* haptics unsupported */
+        }
+      }
+    }
+
+    // Live aim steering (smoothed): pull angle steers the engine's actual aim yaw, so
+    // the locked camera swings with the shot line while dragging. Steering engages only
+    // after a small downward pull to avoid wobble at touch-down.
     const aim = swipeAimRef.current;
-    if (aim && next.dy > 8) {
-      const angleDeg = Math.max(
-        -40,
-        Math.min(40, (Math.atan2(next.dx, Math.max(30, next.dy)) * 180) / Math.PI)
-      );
-      const desiredYaw = aim.startYaw + ((angleDeg / 40) * swipeAimRangeDeg * Math.PI) / 180;
-      const delta = desiredYaw - aim.appliedYaw;
-      if (Math.abs(delta) > 0.0008) {
-        aim.appliedYaw = desiredYaw;
+    if (aim && next.dy > 14) {
+      const offsetRad = ((swipeAngleDegOf(next.dx, next.dy) / 40) * swipeAimRangeDeg * Math.PI) / 180;
+      aim.desiredYaw = aim.startYaw + offsetRad;
+      const smoothed = aim.appliedYaw + (aim.desiredYaw - aim.appliedYaw) * 0.35;
+      const delta = smoothed - aim.appliedYaw;
+      if (Math.abs(delta) > 0.0004) {
+        aim.appliedYaw = smoothed;
         onAdjustAim(delta);
       }
     }
@@ -374,6 +436,11 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
         onAdjustAim(aim.startYaw - aim.appliedYaw);
       }
       return;
+    }
+    // Settle the aim exactly on the final steered direction (smoothing lag catches up)
+    if (aim) {
+      const remaining = aim.desiredYaw - aim.appliedYaw;
+      if (Math.abs(remaining) > 0.0004) onAdjustAim(remaining);
     }
     const pullFrac = Math.min(1, pull / cur.maxPullPx);
     const powerRatio = isPutting
@@ -744,7 +811,9 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
         </div>
       )}
 
-      {/* Main Swing Controller Dock — compact pill bar when idle, expanding seamlessly when clicked or swinging */}
+      {/* Main Swing Controller Dock — hidden on mobile swipe mode for a fully immersive
+          viewport (shot type / swing mode / shaping live in the side menu instead) */}
+      {!(isMobile && mode === 'swipe_pull') && (
       <div className="pointer-events-auto hud-glass flex flex-col gap-1.5 rounded-2xl px-3 py-2 max-w-[92vw]">
         {!isPutting && isReady && (
           <div className="flex flex-wrap items-center justify-center gap-1 border-b border-white/10 pb-1.5">
@@ -1050,7 +1119,9 @@ export const SwingControls: React.FC<SwingControlsProps> = ({
           </div>
         )}
       </div>
+      )}
     </div>
     </>
   );
-};
+});
+SwingControls.displayName = 'SwingControls';
