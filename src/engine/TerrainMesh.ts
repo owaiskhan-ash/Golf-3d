@@ -31,14 +31,8 @@ export class TerrainMeshSystem {
   public setPhotoTextures(set: PhotoTextureSet): void {
     this.photo = set;
     if (this.shaderUniforms) {
-      this.shaderUniforms.uLawnColorMap.value = set.lawnColor;
-      this.shaderUniforms.uLawnNormMap.value = set.lawnNormal;
-      this.shaderUniforms.uRoughColorMap.value = set.roughColor;
-      this.shaderUniforms.uRoughNormMap.value = set.roughNormal;
-      this.shaderUniforms.uSandColorMap.value = set.sandColor;
-      this.shaderUniforms.uSandNormMap.value = set.sandNormal;
-      this.shaderUniforms.uRockColorMap.value = set.rockColor;
-      this.shaderUniforms.uRockNormMap.value = set.rockNormal;
+      this.shaderUniforms.uPhotoColorAtlas.value = set.colorAtlas;
+      this.shaderUniforms.uPhotoNormalAtlas.value = set.normalAtlas;
       this.shaderUniforms.uPhotoStrength.value = 1.0;
     }
   }
@@ -234,20 +228,14 @@ export class TerrainMeshSystem {
       uCloudCoverage: { value: 0.49 },
       uMistColor: { value: new THREE.Color(0xc0d9eb) },
       uMistDensity: { value: 0.0045 },
-      // Photographic CC0 PBR layer (ambientCG) — strength fades in once JPGs finish decoding
+      // Photographic CC0 PBR layer (ambientCG atlases) — strength fades in once JPGs finish decoding
       uPhotoStrength: { value: this.photo?.loaded ? 1.0 : 0.0 },
-      uLawnColorMap: { value: this.photo?.lawnColor ?? null },
-      uLawnNormMap: { value: this.photo?.lawnNormal ?? null },
-      uRoughColorMap: { value: this.photo?.roughColor ?? null },
-      uRoughNormMap: { value: this.photo?.roughNormal ?? null },
-      uSandColorMap: { value: this.photo?.sandColor ?? null },
-      uSandNormMap: { value: this.photo?.sandNormal ?? null },
-      uRockColorMap: { value: this.photo?.rockColor ?? null },
-      uRockNormMap: { value: this.photo?.rockNormal ?? null },
+      uPhotoColorAtlas: { value: this.photo?.colorAtlas ?? null },
+      uPhotoNormalAtlas: { value: this.photo?.normalAtlas ?? null },
     };
     this.shaderUniforms = uniforms;
 
-    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v4-photo';
+    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v5-atlas';
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
 
@@ -295,14 +283,8 @@ export class TerrainMeshSystem {
           uniform vec3 uMistColor;
           uniform float uMistDensity;
           uniform float uPhotoStrength;
-          uniform sampler2D uLawnColorMap;
-          uniform sampler2D uLawnNormMap;
-          uniform sampler2D uRoughColorMap;
-          uniform sampler2D uRoughNormMap;
-          uniform sampler2D uSandColorMap;
-          uniform sampler2D uSandNormMap;
-          uniform sampler2D uRockColorMap;
-          uniform sampler2D uRockNormMap;
+          uniform sampler2D uPhotoColorAtlas;
+          uniform sampler2D uPhotoNormalAtlas;
 
           varying vec3 vTerrainWorldPos;
           varying vec3 vTerrainWorldNormal;
@@ -313,6 +295,13 @@ export class TerrainMeshSystem {
           vec3 tPhotoHue(vec3 c) {
             float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
             return c / max(l, 0.045);
+          }
+
+          // 2x2 atlas quadrant remap: 0 lawn, 1 rough, 2 sand, 3 rock.
+          // Small inset keeps bilinear/mip sampling from bleeding across quadrant borders.
+          vec2 tPhotoQuadUv(vec2 uv, float quad) {
+            vec2 cell = fract(uv) * 0.484 + 0.008;
+            return cell + vec2(quad == 1.0 || quad == 3.0 ? 0.5 : 0.0, quad >= 2.0 ? 0.5 : 0.0);
           }
 
           float tHash(vec2 p) {
@@ -374,13 +363,13 @@ export class TerrainMeshSystem {
           // Photographic PBR samples (CC0 ambientCG): real lawn/meadow/sandstone albedo.
           // bladeHeight/pigment/thatch blend toward photo-derived values so every downstream
           // turf recipe (rough, first cut, fairway, green) inherits photographic structure.
-          vec3 pLawnBlade = texture2D(uLawnColorMap, rotXZ * 0.55 + vec2(0.19, 0.41)).rgb;
-          vec3 pLawnMacro = texture2D(uLawnColorMap, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23)).rgb;
-          vec3 pRough = texture2D(uRoughColorMap, vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11)).rgb;
-          vec3 pSand = texture2D(uSandColorMap, vTerrainWorldPos.xz * 0.5).rgb;
-          vec3 pRock = texture2D(uRockColorMap, (vTerrainWorldNormal.y < 0.7
+          vec3 pLawnBlade = texture2D(uPhotoColorAtlas, tPhotoQuadUv(rotXZ * 0.55 + vec2(0.19, 0.41), 0.0)).rgb;
+          vec3 pLawnMacro = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0)).rgb;
+          vec3 pRough = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11), 1.0)).rgb;
+          vec3 pSand = texture2D(uPhotoColorAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.5, 2.0)).rgb;
+          vec3 pRock = texture2D(uPhotoColorAtlas, tPhotoQuadUv((vTerrainWorldNormal.y < 0.7
             ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
-            : vTerrainWorldPos.xz) * 0.22).rgb;
+            : vTerrainWorldPos.xz) * 0.22, 3.0)).rgb;
           float pLawnH = dot(pLawnBlade, vec3(0.2126, 0.7152, 0.0722));
           float pLawnMacroLum = dot(pLawnMacro, vec3(0.2126, 0.7152, 0.0722));
           float pRoughLum = dot(pRough, vec3(0.2126, 0.7152, 0.0722));
@@ -634,9 +623,9 @@ export class TerrainMeshSystem {
 
           // Photographic PBR normal maps (real lawn fiber, lumpy sand, sandstone fissures)
           if (uPhotoStrength > 0.001) {
-            vec3 gNormPhoto = texture2D(uLawnNormMap, nRot * 0.55 + vec2(0.19, 0.41)).xyz * 2.0 - 1.0;
-            vec3 sNormPhoto = texture2D(uSandNormMap, vTerrainWorldPos.xz * 0.5).xyz * 2.0 - 1.0;
-            vec3 rNormPhoto = texture2D(uRockNormMap, cliffUv * 1.4).xyz * 2.0 - 1.0;
+            vec3 gNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(nRot * 0.55 + vec2(0.19, 0.41), 0.0)).xyz * 2.0 - 1.0;
+            vec3 sNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(vTerrainWorldPos.xz * 0.5, 2.0)).xyz * 2.0 - 1.0;
+            vec3 rNormPhoto = texture2D(uPhotoNormalAtlas, tPhotoQuadUv(cliffUv * 1.4, 3.0)).xyz * 2.0 - 1.0;
             gNorm = normalize(mix(gNorm, gNormPhoto, uPhotoStrength * 0.80));
             sNorm = normalize(mix(sNorm, sNormPhoto, uPhotoStrength * 0.85));
             rNorm = normalize(mix(rNorm, rNormPhoto, uPhotoStrength * 0.90));
