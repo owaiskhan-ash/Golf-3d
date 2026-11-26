@@ -280,6 +280,20 @@ export class OceanSystem {
   private readonly _clipPlane = new THREE.Vector4();
   private readonly _q = new THREE.Vector4();
 
+  /**
+   * Cache of the objects the reflection pass hides, plus the last "signature" it was built
+   * from. The caller used to allocate a fresh array via spread on every frame
+   * (`[...getTransientGrassObjects(), ...getObjects()]`), which allocated ~20 objects plus two
+   * intermediate arrays at 60 Hz and let the list drift turn stale objects into leaked
+   * visibility state. The signature encodes the resolved list so a rebuild only happens when
+   * the underlying sets actually change (they are rebuilt per hole / per tracer update).
+   */
+  private hiddenCache: THREE.Object3D[] = [];
+  private hiddenSignature = '';
+  private readonly _reflectFrustum = new THREE.Frustum();
+  private readonly _reflectPV = new THREE.Matrix4();
+  private prevStates: boolean[] = [];
+
   constructor(private readonly scene: THREE.Scene) {
     // Dense near coastline (-550..+200m), broad horizon out to 2600m
     const geo = new THREE.PlaneGeometry(2800, 2800, 180, 180);
@@ -341,6 +355,16 @@ export class OceanSystem {
       return;
     }
 
+    // Early-out when the ocean quad is outside the view frustum: the reflection would be
+    // sampled by zero pixels, yet a full reflected scene render was paid for anyway. This is
+    // the common case in the address/green-read cameras, which look inland.
+    this._reflectPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this._reflectFrustum.setFromProjectionMatrix(this._reflectPV);
+    if (!this._reflectFrustum.intersectsObject(this.mesh)) {
+      this.material.uniforms.uHasReflect.value = 0;
+      return;
+    }
+
     this._view.reflect(this._mirrorNormal).negate().add(this._mirrorPos);
     this._rotMat.extractRotation(camera.matrixWorld);
     this._lookAt.set(0, 0, -1).applyMatrix4(this._rotMat).add(this._camPos);
@@ -389,11 +413,25 @@ export class OceanSystem {
     const prevXr = renderer.xr.enabled;
     const prevShadowAuto = renderer.shadowMap.autoUpdate;
 
-    const prevStates: boolean[] = [];
-    this.mesh.visible = false;
+    // Reuse the visibility snapshot array and only re-derive the hidden set when the caller's
+    // reported objects actually changed.
+    let signature = '';
     for (let i = 0; i < hiddenObjects.length; i++) {
-      prevStates.push(hiddenObjects[i].visible);
-      hiddenObjects[i].visible = false;
+      if (hiddenObjects[i]) signature += hiddenObjects[i].id.toString(36) + ',';
+    }
+    if (signature !== this.hiddenSignature) {
+      this.hiddenSignature = signature;
+      this.hiddenCache = hiddenObjects.filter((o) => !!o);
+      if (this.prevStates.length !== this.hiddenCache.length) {
+        this.prevStates = new Array(this.hiddenCache.length).fill(true);
+      }
+    }
+
+    const prevStates = this.prevStates;
+    this.mesh.visible = false;
+    for (let i = 0; i < this.hiddenCache.length; i++) {
+      prevStates[i] = this.hiddenCache[i].visible;
+      this.hiddenCache[i].visible = false;
     }
 
     renderer.xr.enabled = false;
@@ -404,8 +442,8 @@ export class OceanSystem {
     renderer.render(this.scene, this.reflectCam);
 
     this.mesh.visible = true;
-    for (let i = 0; i < hiddenObjects.length; i++) {
-      hiddenObjects[i].visible = prevStates[i];
+    for (let i = 0; i < this.hiddenCache.length; i++) {
+      this.hiddenCache[i].visible = prevStates[i];
     }
     renderer.xr.enabled = prevXr;
     renderer.shadowMap.autoUpdate = prevShadowAuto;

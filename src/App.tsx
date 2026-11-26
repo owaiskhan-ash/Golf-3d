@@ -310,7 +310,20 @@ export const App: React.FC = () => {
               <div className="pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/75 px-3 py-1 text-[10px] text-amber-200 border border-amber-400/30 backdrop-blur">
                 {snap.autoQualityNote}
               </div>
-            ) : null)}
+            ) : (
+              // Live perf readout: smoothed FPS plus the dynamic-resolution scale, so it is
+              // obvious whether a slow frame is being absorbed by the scaler or not.
+              <div
+                className={`pointer-events-none fixed top-14 right-3 z-20 rounded-full bg-slate-900/70 px-3 py-1 text-[10px] tabular-nums backdrop-blur border ${
+                  snap.fps < 45
+                    ? 'text-amber-200 border-amber-400/30'
+                    : 'text-emerald-200/80 border-emerald-400/20'
+                }`}
+                title="Smoothed FPS · dynamic resolution scale"
+              >
+                {Math.round(snap.fps)} FPS · {snap.qualityLevel.toUpperCase()} · {Math.round(snap.renderScale * 100)}%
+              </div>
+            ))}
 
           <ScorecardModal
             open={scorecardOpen}

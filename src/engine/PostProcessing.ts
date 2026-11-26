@@ -95,6 +95,7 @@ const BROADCAST_GRADE_SHADER = {
     uDofStrength: { value: 1.0 },
     uTexelSize: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
     uSharpness: { value: 0.46 },
+    uDofTaps: { value: 1.0 },
     uGradeStrength: { value: 1.0 },
     uExposureLift: { value: 1.0 },
   },
@@ -115,6 +116,7 @@ const BROADCAST_GRADE_SHADER = {
     uniform float uDofStrength;
     uniform vec2 uTexelSize;
     uniform float uSharpness;
+    uniform float uDofTaps;
     uniform float uGradeStrength;
     uniform float uExposureLift;
     varying vec2 vUv;
@@ -153,7 +155,7 @@ const BROADCAST_GRADE_SHADER = {
       vec3 casWeight = -amp * (0.26 * uSharpness * (1.0 - farCoc * 0.85));
       vec3 sharpCol = clamp((tex.rgb + (cN + cS + cE + cW) * casWeight) / max(1.0 + 4.0 * casWeight, vec3(0.35)), 0.0, 1.0);
 
-      if (farCoc > 0.04) {
+      if (farCoc > 0.04 && uDofTaps > 0.5) {
         vec2 aspectScale = vec2(uTexelSize.y / max(uTexelSize.x, 1e-5), 1.0);
         float rad = farCoc * 0.0024;
         // 12-tap golden-angle spiral disc — visibly creamier, more circular bokeh than a 6-tap hex
@@ -379,7 +381,8 @@ export class PostProcessingPipeline {
 
   public updateCameraLens(dt: number, focusDistM: number, dofStrength: number, sunElev: number): void {
     this.gradePass.uniforms.uFocusDist.value = Math.max(1.5, focusDistM);
-    this.gradePass.uniforms.uDofStrength.value = this.gtaoPass.enabled ? dofStrength : 0.0;
+    this.gradePass.uniforms.uDofStrength.value =
+      this.gtaoPass.enabled && this.gradePass.uniforms.uDofTaps.value > 0.5 ? dofStrength : 0.0;
     this.gradePass.uniforms.uCameraNear.value = this.camera.near;
     this.gradePass.uniforms.uCameraFar.value = this.camera.far;
 
@@ -402,11 +405,15 @@ export class PostProcessingPipeline {
     this.gradePass.uniforms.uTexelSize.value.set(1 / rtW, 1 / rtH);
 
     if (quality === 'medium') {
+      // Cheap tier: no AO, no bloom, no volumetric shafts, no 12-tap bokeh. The remaining
+      // grade pass is a single 5-tap sharpen+tonemap and costs almost nothing.
       this.gtaoPass.enabled = false;
       this.bloomPass.enabled = false;
+      this.shaftsPass.enabled = false;
       this.shaftsPass.uniforms.uHasDepth.value = 0.0;
       this.shaftsPass.uniforms.uStrength.value = 0.45;
       this.gradePass.uniforms.uHasDepth.value = 0.0;
+      this.gradePass.uniforms.uDofTaps.value = 0.0;
       this.gradePass.uniforms.uSharpness.value = 0.34;
       this.gradePass.uniforms.uGradeStrength.value = 0.75;
     } else {
@@ -419,6 +426,8 @@ export class PostProcessingPipeline {
       this.shaftsPass.uniforms.uHasDepth.value = 1.0;
       this.shaftsPass.uniforms.uStrength.value = quality === 'ultra' ? 1.15 : 0.80;
       this.gradePass.uniforms.uHasDepth.value = 1.0;
+      this.gradePass.uniforms.uDofTaps.value = 1.0;
+      this.shaftsPass.enabled = true;
       // CAS cannot recover detail that was never sampled, and over-sharpening is exactly
       // what makes procedural grass look crunchy. With the packed KTX2 detail layers doing
       // the work now (per-material relief height, real photographic normals), the sharpener

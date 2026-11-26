@@ -249,7 +249,7 @@ export class TerrainMeshSystem {
 
     // Keep three from inserting its own normal-map sampler for the photo layer: we sample
     // uPhotoNormalAtlas manually. Bump the cache key whenever the injected GLSL changes.
-    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v6-ktx2-packed';
+    mat.customProgramCacheKey = () => 'terrain-cinema-pbr-v7-lod';
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
 
@@ -367,14 +367,19 @@ export class TerrainMeshSystem {
           // single fixed-scale sample produced from the drone camera.
           // (Normal maps deliberately do NOT use this: rotating a stored vector field would
           // rotate the lighting response rather than the detail.)
-          vec4 tPhotoAlbedoOctave(sampler2D atlas, vec2 uv, float quad, float seed, float lod) {
+          vec4 tPhotoAlbedoOctave(sampler2D atlas, vec2 uv, float quad, float seed, float lod, float farBlend) {
             vec4 a = tPhotoSample(atlas, uv, quad, lod);
+            // The second octave exists purely to hide the tile repeat, which is only legible
+            // close up. Past the far LOD distance it is resampled at half the frequency and
+            // skipped entirely, halving the texture-fetch cost of the largest surface on screen.
+            if (farBlend > 0.995) return a;
             float ang = 0.63 + seed * 0.021;
             float ca = cos(ang);
             float sa = sin(ang);
-            vec2 uv2 = mat2(ca, -sa, sa, ca) * uv * 0.43 + vec2(0.37, 0.61);
+            float scale2 = mix(0.43, 0.19, farBlend);
+            vec2 uv2 = mat2(ca, -sa, sa, ca) * uv * scale2 + vec2(0.37, 0.61);
             vec4 b = tPhotoSample(atlas, uv2, quad, lod);
-            float m = smoothstep(0.28, 0.72, tNoise(uv * 0.23 + seed)) * 0.55;
+            float m = smoothstep(0.28, 0.72, tNoise(uv * 0.23 + seed)) * mix(0.55, 0.85, farBlend);
             return mix(a, b, m);
           }
 
@@ -399,9 +404,20 @@ export class TerrainMeshSystem {
           // Multi-scale 1024px 24,000-blade turf detail (macro patch + 4.5mm fairway blades + 1.5mm putting green Poa fiber)
           float camDist = length(cameraPosition - vTerrainWorldPos);
           float nearMicro = 1.0 - smoothstep(10.0, 44.0, camDist);
+          // Shared distance LOD for the expensive detail work. The aerial drone camera and the
+          // full-hole views put most of the screen past 90m, where sub-centimetre blade normals
+          // and secondary albedo octaves are below one pixel of contrast but still cost full
+          // texture bandwidth. Ramping them out here is where the bulk of the frame-time win
+          // comes from; the colour/shape of the turf is preserved because the *base* layers stay.
+          float detailLOD = smoothstep(55.0, 165.0, camDist);
           vec3 gMacro = texture2D(uGrassDetail, vTerrainWorldPos.xz * 0.36).rgb;
           vec3 gBlade = texture2D(uGrassDetail, rotXZ * 1.45 + vec2(0.19, 0.41)).rgb;
-          vec3 gMicro = texture2D(uGrassDetail, rotXZ * 3.65 + vec2(0.53, 0.27)).rgb;
+          // Sub-centimetre Poa fibre only exists for the putting surface and only resolves
+          // within a few metres; fetching it for entire distant hillsides was pure waste.
+          vec3 gMicro = gBlade;
+          if (nearMicro > 0.01) {
+            gMicro = mix(gBlade, texture2D(uGrassDetail, rotXZ * 3.65 + vec2(0.53, 0.27)).rgb, nearMicro);
+          }
 
           float bladeHeight = mix(gMacro.r * 0.55 + gBlade.r * 0.45, gMacro.r * 0.24 + gBlade.r * 0.48 + gMicro.r * 0.28, nearMicro);
           float bladePigment = mix(gMacro.g * 0.5 + gBlade.g * 0.5, gBlade.g * 0.62 + gMicro.g * 0.38, nearMicro);
@@ -415,11 +431,15 @@ export class TerrainMeshSystem {
           vec2 pRockPlanarUv = (vTerrainWorldNormal.y < 0.7
             ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
             : vTerrainWorldPos.xz) * 0.22;
-          vec4 pLawnBladeS = tPhotoAlbedoOctave(uPhotoColorAtlas, rotXZ * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0);
-          vec4 pLawnMacroS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 7.9, 0.0);
-          vec4 pRoughS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11), 1.0, 3.1, 0.0);
-          vec4 pSandS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0);
-          vec4 pRockS = tPhotoAlbedoOctave(uPhotoColorAtlas, pRockPlanarUv, 3.0, 9.2, 0.0);
+          // At distance the two *macro* octaves (lawn patch + rough patch) collapse into one
+          // sample each — they are low-frequency, so the second tap carries no visible
+          // information beyond ~90m. The close-range blade/sand/rock taps keep their octave.
+          float macroFar = smoothstep(80.0, 150.0, camDist);
+          vec4 pLawnBladeS = tPhotoAlbedoOctave(uPhotoColorAtlas, rotXZ * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0, 0.0);
+          vec4 pLawnMacroS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 7.9, 1.0, macroFar);
+          vec4 pRoughS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.075 + vec2(0.37, 0.11), 1.0, 3.1, 1.0, macroFar);
+          vec4 pSandS = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0, 0.0);
+          vec4 pRockS = tPhotoAlbedoOctave(uPhotoColorAtlas, pRockPlanarUv, 3.0, 9.2, 0.0, 0.0);
           vec3 pLawnBlade = pLawnBladeS.rgb;
           vec3 pLawnMacro = pLawnMacroS.rgb;
           vec3 pRough = pRoughS.rgb;
@@ -527,7 +547,9 @@ export class TerrainMeshSystem {
             ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y) * 0.16
             : vTerrainWorldPos.xz * 0.16;
           float rockRelief = 0.5;
-          if (wCliff > 0.08) {
+          // The 3-step parallax march costs 4 dependent texture reads. Past the LOD ramp the
+          // per-step offset is sub-pixel, so a single height read is indistinguishable.
+          if (wCliff > 0.08 && detailLOD < 0.98) {
             // Step the parallax UV along the view ray, advancing only while the sampled
             // height is still below the layer we are testing. Each occlusion test now reads
             // the *real* photographic relief height from the KTX2 normal atlas' blue
@@ -658,19 +680,22 @@ export class TerrainMeshSystem {
           // between waxy bentgrass, matte fescue, dry silica and damp sandstone without
           // spending another texture unit. Re-sampled at the same rotated UV as the albedo
           // pass so the pattern lines up with what the eye sees.
-          if (uPhotoStrength > 0.001) {
-            float rGlossTurf = tPhotoAlbedoOctave(uPhotoColorAtlas, rRot * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0).a;
-            float rGlossSand = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0).a;
+          // Gloss detail is invisible past the LOD ramp, and re-deriving it here costs another
+          // 6 texture fetches per pixel (3 materials x octave). Gate the whole block.
+          if (uPhotoStrength > 0.001 && rCamDist < 150.0) {
+            float rGlossLod = smoothstep(60.0, 150.0, rCamDist);
+            float rGlossTurf = tPhotoAlbedoOctave(uPhotoColorAtlas, rRot * 0.55 + vec2(0.19, 0.41), 0.0, 1.7, 0.0, 0.0).a;
+            float rGlossSand = tPhotoAlbedoOctave(uPhotoColorAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 5.4, 0.0, 0.0).a;
             float rGlossRock = tPhotoAlbedoOctave(uPhotoColorAtlas, (vTerrainWorldNormal.y < 0.7
               ? vec2(vTerrainWorldPos.x + vTerrainWorldPos.z, vTerrainWorldPos.y)
-              : vTerrainWorldPos.xz) * 0.22, 3.0, 9.2, 0.0).a;
+              : vTerrainWorldPos.xz) * 0.22, 3.0, 9.2, 0.0, 0.0).a;
             // Damp -> lower roughness. Turf barely moves; sand and stone respond strongly.
             // rGloss* already carry the per-material base roughness, remapped by dampness.
             float photoRough = baseRough;
             photoRough = mix(photoRough, mix(0.74, 0.44, rGlossTurf), rwGreen);
             photoRough = mix(photoRough, mix(0.95, 0.70, rGlossSand), rwBunk);
             photoRough = mix(photoRough, mix(0.90, 0.30, rGlossRock), rwCliff);
-            baseRough = mix(baseRough, photoRough, uPhotoStrength * 0.7);
+            baseRough = mix(baseRough, photoRough, uPhotoStrength * 0.7 * (1.0 - rGlossLod));
           }
 
           roughnessFactor = baseRough;
@@ -695,9 +720,15 @@ export class TerrainMeshSystem {
           vec2 nRot = vec2(vTerrainWorldPos.x * ncH + vTerrainWorldPos.z * nsH, -vTerrainWorldPos.x * nsH + vTerrainWorldPos.z * ncH);
 
           // Dual-scale 1024px blade normal relief: macro turf crown + sub-centimeter blade midrib edges
+          // Distance LOD: the sub-centimetre blade midrib layer is far below a pixel past
+          // ~90m, so it is skipped there (it was 1/3 of this pass's texture fetches).
+          float nDetailLOD = smoothstep(55.0, 165.0, nCamDist);
           vec3 gNormMacro = texture2D(uGrassNorm, vTerrainWorldPos.xz * 0.36).xyz * 2.0 - 1.0;
           vec3 gNormBlade = texture2D(uGrassNorm, nRot * 1.45 + vec2(0.19, 0.41)).xyz * 2.0 - 1.0;
-          vec3 gNormMicro = texture2D(uGrassNorm, nRot * 3.65 + vec2(0.53, 0.27)).xyz * 2.0 - 1.0;
+          vec3 gNormMicro = vec3(0.0, 0.0, 1.0);
+          if (nNear > 0.01) {
+            gNormMicro = texture2D(uGrassNorm, nRot * 3.65 + vec2(0.53, 0.27)).xyz * 2.0 - 1.0;
+          }
           vec3 gNorm = normalize(gNormMacro * 0.45 + gNormBlade * mix(0.45, 0.88, nNear) + gNormMicro * (0.48 * nNear));
 
           vec3 sNorm = texture2D(uSandNorm, vTerrainWorldPos.xz * 0.42).xyz * 2.0 - 1.0;
@@ -724,7 +755,13 @@ export class TerrainMeshSystem {
           // vector field would rotate the lighting response, not just the detail.
           if (uPhotoStrength > 0.001) {
             vec3 gNormPhoto = tPhotoSample(uPhotoNormalAtlas, nRot * 0.55 + vec2(0.19, 0.41), 0.0, 0.0).xyz * 2.0 - 1.0;
-            vec3 gNormPhotoFar = tPhotoSample(uPhotoNormalAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 1.0).xyz * 2.0 - 1.0;
+            // The far octave is a low-frequency detail; past the LOD ramp it is dropped. This
+            // must be a real branch, not a mix(): mix() evaluates both operands, so the fetch
+            // would still be issued and the optimisation would save nothing.
+            vec3 gNormPhotoFar = vec3(0.5, 0.5, 1.0);
+            if (nDetailLOD < 0.995) {
+              gNormPhotoFar = tPhotoSample(uPhotoNormalAtlas, vTerrainWorldPos.xz * 0.052 + vec2(0.61, 0.23), 0.0, 1.0).xyz * 2.0 - 1.0;
+            }
             vec3 sNormPhoto = tPhotoSample(uPhotoNormalAtlas, vTerrainWorldPos.xz * 0.5, 2.0, 0.0).xyz * 2.0 - 1.0;
             vec3 rNormPhoto = tPhotoSample(uPhotoNormalAtlas, cliffUv * 1.4, 3.0, 0.0).xyz * 2.0 - 1.0;
             // Rebuild z from xy (packed as B = height, not the vector z)

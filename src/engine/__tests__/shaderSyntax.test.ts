@@ -159,6 +159,22 @@ describe('injected GLSL patches', () => {
     expect(all).toContain('vTerrainWorldPos');
   });
 
+  it('expensive detail fetches are behind real branches, not mix() operands', () => {
+    // mix()/step() evaluate both operands, so a distance LOD expressed as a mix still issues
+    // the texture fetch it was meant to skip. This caught a real regression where the far
+    // photographic normal octave was "disabled" at distance but still sampled every pixel.
+    const source = read('TerrainMesh.ts');
+    const mixWithFetch = /mix\(\s*\n?\s*tPhoto(Sample|AlbedoOctave)\([\s\S]{0,240}?,[\s\S]{0,60}?,\s*[a-zA-Z]*(LOD|Far|far)/g;
+    expect(source.match(mixWithFetch)).toBeNull();
+
+    // And the per-vertex/per-pixel LOD factors must actually exist and gate work.
+    expect(source).toContain('if (nearMicro > 0.01)');
+    expect(source).toContain('if (nNear > 0.01)');
+    expect(source).toContain('if (nDetailLOD < 0.995)');
+    expect(source).toContain('detailLOD < 0.98');
+    expect(source).toContain('rCamDist < 150.0');
+  });
+
   it('foliage canopy + bark shaders (FoliageSystem) parses', () => {
     const patches = validateFile('FoliageSystem.ts', 'foliage', 8);
     const all = patches.map((p) => p.glsl).join('\n');
