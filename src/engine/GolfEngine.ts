@@ -22,7 +22,7 @@ import { ModelsSystem, type SwingAnimPhase } from './ModelsSystem';
 import { OceanSystem } from './OceanSystem';
 import { ParticleEffectsSystem } from './ParticleEffects';
 import { PostProcessingPipeline, type GraphicsQuality } from './PostProcessing';
-import { createCourseTextures, type CourseTextureSet } from './ProceduralTextures';
+import { createCourseTextures, loadPhotoTextures, type CourseTextureSet, type PhotoTextureSet } from './ProceduralTextures';
 import {
   SkyAtmosphereSystem,
   TIME_OF_DAY_PRESETS,
@@ -109,6 +109,7 @@ export class GolfEngine {
   public readonly scene: THREE.Scene;
   public readonly cameraSys: CameraSystem;
   public readonly textures: CourseTextureSet;
+  public readonly photoTextures: PhotoTextureSet;
   public readonly skySys: SkyAtmosphereSystem;
   public readonly oceanSys: OceanSystem;
   public readonly terrainSys: TerrainMeshSystem;
@@ -141,8 +142,8 @@ export class GolfEngine {
   public aimPreviewSuppressed = false;
   public foliageDensity: FoliageDensity = 'high';
   public difficulty: DifficultyMode = 'pro';
-  public qualityLevel: GraphicsQuality = 'high';
-  public autoQualityEnabled = true;
+  public qualityLevel: GraphicsQuality = 'ultra';
+  public autoQualityEnabled = false;
 
   // Active shot simulation state
   private simMode: 'flight' | 'roll' = 'flight';
@@ -242,9 +243,13 @@ export class GolfEngine {
     this.cameraSys = new CameraSystem(this.renderer.domElement, w / h);
     const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy());
     this.textures = createCourseTextures(maxAniso);
+    // Photographic CC0 PBR ground textures stream in async and fade onto the terrain when ready
+    this.photoTextures = loadPhotoTextures(maxAniso, (set) => {
+      this.terrainSys.setPhotoTextures(set);
+    });
     this.skySys = new SkyAtmosphereSystem(this.scene, this.renderer, this.cameraSys.camera);
     this.oceanSys = new OceanSystem(this.scene);
-    this.terrainSys = new TerrainMeshSystem(this.scene, this.textures);
+    this.terrainSys = new TerrainMeshSystem(this.scene, this.textures, this.photoTextures);
     this.foliageSys = new FoliageSystem(this.scene, this.textures);
     this.modelsSys = new ModelsSystem(this.scene, this.textures);
     this.particles = new ParticleEffectsSystem(this.scene);
@@ -415,7 +420,6 @@ export class GolfEngine {
   public autoSelectClub(): void {
     this.selectedClub = getClubById(this.getRecommendedClubId());
     const onGreen = this.sampler.getSurface(this.ballPos.x, this.ballPos.z) === 'green';
-    this.setGreenGridVisible(onGreen || this.selectedClub.category === 'putter');
     if (onGreen) {
       this.flagstickInCup = false;
       this.sampler.flagstickInCup = false;
@@ -674,9 +678,10 @@ export class GolfEngine {
     this.emitSnapshot();
   }
 
-  public setGreenGridVisible(visible: boolean): void {
-    this.greenGridVisible = visible;
-    this.terrainSys.setGreenGridVisible(visible);
+  public setGreenGridVisible(_visible: boolean): void {
+    // Green reading grid permanently disabled — immersive photoreal presentation
+    this.greenGridVisible = false;
+    this.terrainSys.setGreenGridVisible(false);
     this.emitSnapshot();
   }
 

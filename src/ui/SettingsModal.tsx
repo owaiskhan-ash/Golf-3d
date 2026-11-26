@@ -2,7 +2,6 @@ import React from 'react';
 import { Volume2, VolumeX, X, Sun, Wind, Activity, Sparkles, Hand } from 'lucide-react';
 import type { DifficultyMode } from '../course/types';
 import { TIME_OF_DAY_PRESETS, type TimeOfDayPreset } from '../engine/SkyAtmosphere';
-import type { GraphicsQuality } from '../engine/PostProcessing';
 import { useIsMobile } from './useIsMobile';
 
 interface SettingsModalProps {
@@ -10,8 +9,6 @@ interface SettingsModalProps {
   playerName: string;
   difficulty: DifficultyMode;
   timeOfDay: TimeOfDayPreset;
-  quality: GraphicsQuality;
-  autoQualityEnabled: boolean;
   windSpeedMph: number;
   windDirDeg: number;
   soundEnabled: boolean;
@@ -22,8 +19,6 @@ interface SettingsModalProps {
   onPlayerNameChange: (name: string) => void;
   onDifficulty: (diff: DifficultyMode) => void;
   onTimeOfDay: (p: TimeOfDayPreset) => void;
-  onQuality: (q: GraphicsQuality) => void;
-  onAutoQualityToggle: (enabled: boolean) => void;
   onWindChange: (mph: number, dirDeg: number) => void;
   onSoundToggle: (enabled: boolean) => void;
   onAimPreviewToggle: (enabled: boolean) => void;
@@ -37,8 +32,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   playerName,
   difficulty,
   timeOfDay,
-  quality,
-  autoQualityEnabled,
   windSpeedMph,
   windDirDeg,
   soundEnabled,
@@ -48,8 +41,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onPlayerNameChange,
   onDifficulty,
   onTimeOfDay,
-  onQuality,
-  onAutoQualityToggle,
   onWindChange,
   onSoundToggle,
   onAimPreviewToggle,
@@ -179,34 +170,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Graphics Quality + Auto FPS Scaler */}
+          {/* Graphics — locked to ULTRA */}
           <div>
             <div className="mb-2 flex items-center justify-between font-bold uppercase tracking-wider text-slate-300">
               <span>Graphics & Grass Density</span>
-              <button
-                onClick={() => onAutoQualityToggle(!autoQualityEnabled)}
-                className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold transition ${
-                  autoQualityEnabled ? 'bg-sky-500/20 text-sky-300' : 'bg-white/10 text-slate-400'
-                }`}
-              >
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[9px] font-bold text-emerald-300">
                 <Activity className="h-2.5 w-2.5" />
-                Auto FPS: {autoQualityEnabled ? 'ON' : 'OFF'}
-              </button>
+                ALWAYS ON
+              </span>
             </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {(['ultra', 'high', 'medium'] as GraphicsQuality[]).map((q) => (
-                <button
-                  key={q}
-                  onClick={() => onQuality(q)}
-                  className={`rounded-xl py-2 font-bold uppercase transition ${
-                    quality === q
-                      ? 'bg-emerald-500 text-slate-950'
-                      : 'bg-white/5 text-slate-300 hover:bg-white/10'
-                  }`}
-                >
-                  {q}
-                </button>
-              ))}
+            <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-emerald-500 to-sky-500 px-3 py-2.5 font-bold text-slate-950">
+              <span className="uppercase">Ultra Photoreal</span>
+              <span className="text-[10px] font-semibold opacity-80">4K shadows · Photo PBR turf · Cinematic post</span>
             </div>
           </div>
 

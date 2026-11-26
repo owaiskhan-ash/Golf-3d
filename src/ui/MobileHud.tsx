@@ -9,7 +9,6 @@ import {
   Flag,
   FlipHorizontal2,
   Gauge,
-  Grid3x3,
   Hand,
   LifeBuoy,
   Menu,
@@ -40,7 +39,6 @@ interface MobileHudProps {
   onSelectHole: (id: string) => void;
   onCameraMode: (mode: CameraMode) => void;
   onDifficulty: (diff: DifficultyMode) => void;
-  onToggleGreenGrid: () => void;
   onToggleFlagstick: () => void;
   onMulligan: () => void;
   onUnplayableDrop: () => void;
@@ -98,7 +96,6 @@ export const MobileHud: React.FC<MobileHudProps> = ({
   onSelectHole,
   onCameraMode,
   onDifficulty,
-  onToggleGreenGrid,
   onToggleFlagstick,
   onMulligan,
   onUnplayableDrop,
@@ -383,17 +380,6 @@ export const MobileHud: React.FC<MobileHudProps> = ({
                       On-Course Aids
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <button
-                        onClick={onToggleGreenGrid}
-                        className={`flex min-h-[44px] items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition active:scale-[0.98] ${
-                          snap.greenGridVisible
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-white/5 text-slate-300'
-                        }`}
-                      >
-                        <Grid3x3 className="h-4 w-4" />
-                        Green Slope Grid {snap.greenGridVisible ? '· On' : '· Off'}
-                      </button>
                       <button
                         onClick={onToggleFlagstick}
                         className={`flex min-h-[44px] items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition active:scale-[0.98] ${
