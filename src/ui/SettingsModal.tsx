@@ -1,8 +1,9 @@
 import React from 'react';
-import { Volume2, VolumeX, X, Sun, Wind, Activity, Sparkles } from 'lucide-react';
+import { Volume2, VolumeX, X, Sun, Wind, Activity, Sparkles, Hand } from 'lucide-react';
 import type { DifficultyMode } from '../course/types';
 import { TIME_OF_DAY_PRESETS, type TimeOfDayPreset } from '../engine/SkyAtmosphere';
 import type { GraphicsQuality } from '../engine/PostProcessing';
+import { useIsMobile } from './useIsMobile';
 
 interface SettingsModalProps {
   open: boolean;
@@ -16,6 +17,8 @@ interface SettingsModalProps {
   soundEnabled: boolean;
   aimPreviewEnabled: boolean;
   proTracerEnabled: boolean;
+  /** Mobile swipe steering range (degrees, full shots). Putts scale to ~42%. */
+  swipeSensitivityDeg: number;
   onPlayerNameChange: (name: string) => void;
   onDifficulty: (diff: DifficultyMode) => void;
   onTimeOfDay: (p: TimeOfDayPreset) => void;
@@ -25,6 +28,7 @@ interface SettingsModalProps {
   onSoundToggle: (enabled: boolean) => void;
   onAimPreviewToggle: (enabled: boolean) => void;
   onProTracerToggle: (enabled: boolean) => void;
+  onSwipeSensitivityChange: (deg: number) => void;
   onClose: () => void;
 }
 
@@ -40,6 +44,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   soundEnabled,
   aimPreviewEnabled,
   proTracerEnabled,
+  swipeSensitivityDeg,
   onPlayerNameChange,
   onDifficulty,
   onTimeOfDay,
@@ -49,8 +54,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSoundToggle,
   onAimPreviewToggle,
   onProTracerToggle,
+  onSwipeSensitivityChange,
   onClose,
 }) => {
+  const isMobile = useIsMobile();
   if (!open) return null;
 
   return (
@@ -202,6 +209,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Mobile Swipe Steering Sensitivity */}
+          {isMobile && (
+            <div className="rounded-2xl bg-white/5 p-3">
+              <div className="mb-2 flex items-center gap-1.5 font-bold uppercase tracking-wider text-slate-300">
+                <Hand className="h-3.5 w-3.5 text-emerald-300" />
+                <span>Swipe Steering</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Pull-tilt aim range</span>
+                <span className="font-bold text-emerald-300 tabular-nums">
+                  ±{swipeSensitivityDeg}°
+                </span>
+              </div>
+              <input
+                type="range"
+                min={6}
+                max={20}
+                step={1}
+                value={swipeSensitivityDeg}
+                onChange={(e) => onSwipeSensitivityChange(Number(e.target.value))}
+                className="w-full"
+              />
+              <div className="mt-1 text-[10px] text-slate-500">
+                How far a full sideways tilt steers the shot. Putts scale down automatically.
+              </div>
+            </div>
+          )}
 
           {/* Toggles */}
           <div className="grid grid-cols-3 gap-1.5 pt-1">

@@ -24,6 +24,12 @@ interface SwingControlsProps {
   onContinueHoled: () => void;
   /** Publishes { mode, shotType, proDrawerOpen } whenever they change (drives the mobile side menu). */
   onUiStateChange?: (ui: SwingUiState) => void;
+  /** Mobile swipe: throttled (~10 Hz) predicted-landing ring while pulling. */
+  onSwipePreview?: (powerRatio: number) => void;
+  /** Mobile swipe: clear the landing ring on release/cancel. */
+  onSwipePreviewEnd?: () => void;
+  /** Swipe steering range in degrees (full shots; putts scale to ~42%). Default 12. */
+  swipeSensitivityDeg?: number;
 }
 
 export type SwingInputMode = 'three_click' | 'mouse_drag' | 'pro_sim' | 'swipe_pull';
@@ -51,6 +57,9 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
     onStopReplay,
     onContinueHoled,
     onUiStateChange,
+    onSwipePreview,
+    onSwipePreviewEnd,
+    swipeSensitivityDeg = 12,
   }, ref) => {
   const isMobile = useIsMobile();
   // Mobile defaults to the full-screen swipe pull-angle gesture
@@ -87,6 +96,9 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
     dx: number;
     dy: number;
     maxPullPx: number;
+    lastT: number;
+    emaVx: number;
+    emaVy: number;
   } | null>(null);
   // Ref mirrors: gesture logic runs off refs (no side effects inside state updaters),
   // state only drives the overlay render.
@@ -96,6 +108,9 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
     dx: number;
     dy: number;
     maxPullPx: number;
+    lastT: number;
+    emaVx: number;
+    emaVy: number;
   } | null>(null);
   // Aim yaw at gesture start + applied/desired yaw, so the pull angle steers the REAL
   // shot direction live (smoothed) and can be reverted exactly if the gesture cancels.
@@ -104,6 +119,8 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
   );
   // Last haptic power bucket (0..4) — vibrate a tick whenever a 25% threshold is crossed
   const swipeHapticBucketRef = useRef(-1);
+  // Throttle gate for the predicted-landing ring sim (~10 Hz)
+  const lastSwipePreviewAtRef = useRef(0);
 
   /** Pull angle in degrees (0 = straight down), clamped to ±40° with a 2° center deadzone. */
   const swipeAngleDegOf = (dx: number, dy: number): number => {
@@ -345,16 +362,29 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
 
   // Swipe pull mechanics: pull DOWN for power (eased — gentler at the start, finer on
   // putts), and the pull ANGLE steers the shot's actual aim direction live.
-  // Pull right = aim right (±12° full shots, ±5° putts). One finger does everything.
-  const swipeAimRangeDeg = isPutting ? 5 : 12;
+  // Pull right = aim right. Steering range is user-adjustable (putts scale to ~42%).
+  const swipeAimRangeDeg = isPutting ? swipeSensitivityDeg * 0.42 : swipeSensitivityDeg;
   let swipePowerRatio = 0;
   let swipeAimOffsetDeg = 0;
+  let swipeFlickShapeDeg = 0;
   if (swipePull) {
     const pullFrac = Math.min(1, Math.max(0, swipePull.dy) / swipePull.maxPullPx);
     swipePowerRatio = isPutting
       ? Math.pow(pullFrac, 1.35)
       : Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06);
     swipeAimOffsetDeg = (swipeAngleDegOf(swipePull.dx, swipePull.dy) / 40) * swipeAimRangeDeg;
+    swipeFlickShapeDeg = Math.max(-2.5, Math.min(2.5, swipePull.emaVx * 5));
+  }
+  // Wind-compensation hint: how far to aim INTO the crosswind so drift brings it back
+  let windAimHintDeg = 0;
+  if (swipePull && !isPutting && snap.wind.speedMps > 0.5) {
+    const crossMph = snap.wind.speedMps * 2.23694 * Math.sin(snap.wind.directionRad - snap.aimYawRad);
+    const driftYds =
+      crossMph * Math.min(1, snap.selectedClub.expectedCarryYds / 250) * 1.8;
+    windAimHintDeg = Math.max(
+      -8,
+      Math.min(8, (Math.atan(driftYds / Math.max(8, snap.distanceToPinYds)) * 180) / Math.PI)
+    );
   }
   const swipeColor =
     swipePowerRatio > 0.85 ? '#fbbf24' : swipePowerRatio > 0.5 ? '#34d399' : '#38bdf8';
@@ -371,6 +401,7 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
       desiredYaw: snap.aimYawRad,
     };
     swipeHapticBucketRef.current = -1;
+    lastSwipePreviewAtRef.current = 0;
     // Pull length adapts to the viewport: longer on tall phones (finer control),
     // workable on short landscape screens.
     const start = {
@@ -379,6 +410,9 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
       dx: 0,
       dy: 0,
       maxPullPx: Math.max(180, Math.min(window.innerHeight * 0.38, 420)),
+      lastT: performance.now(),
+      emaVx: 0,
+      emaVy: 0,
     };
     swipePullRef.current = start;
     setSwipePull(start);
@@ -387,7 +421,19 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
   const handleSwipePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const cur = swipePullRef.current;
     if (!cur) return;
-    const next = { ...cur, dx: e.clientX - cur.startX, dy: e.clientY - cur.startY };
+
+    // Finger velocity (EMA, px/ms) — drives the release flick bonus & pull-curve shaping
+    const now = performance.now();
+    const dtMs = now - cur.lastT;
+    let emaVx = cur.emaVx;
+    let emaVy = cur.emaVy;
+    const dx = e.clientX - cur.startX;
+    const dy = e.clientY - cur.startY;
+    if (dtMs > 0 && dtMs < 120) {
+      emaVx += ((dx - cur.dx) / dtMs - emaVx) * 0.4;
+      emaVy += ((dy - cur.dy) / dtMs - emaVy) * 0.4;
+    }
+    const next = { ...cur, dx, dy, lastT: now, emaVx, emaVy };
     swipePullRef.current = next;
     setSwipePull(next);
 
@@ -419,6 +465,15 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
         onAdjustAim(delta);
       }
     }
+
+    // Predicted-landing ring, throttled to ~10 Hz (full shot sim per call)
+    if (onSwipePreview && now - lastSwipePreviewAtRef.current > 100) {
+      lastSwipePreviewAtRef.current = now;
+      const pr = isPutting
+        ? Math.pow(pullFrac, 1.35)
+        : Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06);
+      onSwipePreview(pr);
+    }
   };
 
   const handleSwipePointerUp = () => {
@@ -427,6 +482,7 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
     setSwipePull(null);
     const aim = swipeAimRef.current;
     swipeAimRef.current = null;
+    onSwipePreviewEnd?.();
     if (!cur) return;
 
     const pull = Math.max(0, cur.dy);
@@ -443,14 +499,18 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
       if (Math.abs(remaining) > 0.0004) onAdjustAim(remaining);
     }
     const pullFrac = Math.min(1, pull / cur.maxPullPx);
+    // Flick bonus: letting go while still moving fast rewards a committed swing (+4% max)
+    const flickBonus = !isPutting && cur.emaVy > 1.2 ? Math.min(0.04, (cur.emaVy - 1.2) * 0.02) : 0;
     const powerRatio = isPutting
-      ? Math.max(0.06, Math.pow(pullFrac, 1.35))
-      : Math.max(0.08, Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06));
+      ? Math.max(0.06, Math.min(1.0, Math.pow(pullFrac, 1.35)))
+      : Math.max(0.08, Math.min(1.06, Math.pow(pullFrac, 0.95) * 1.06 + flickBonus));
+    // Pull-curve shaping: sideways flick speed adds a touch of draw/fade on top of steering
+    const flickShapeDeg = Math.max(-2.5, Math.min(2.5, cur.emaVx * 5));
     // Fire along the steered aim; shaping sliders still apply on top for pro users
     onExecuteShot({
       powerRatio,
-      clubPathDeg,
-      faceAngleDeg,
+      clubPathDeg: clubPathDeg + flickShapeDeg,
+      faceAngleDeg: faceAngleDeg + flickShapeDeg * 0.45,
       attackAngleDeltaDeg,
       dynamicLoftDeltaDeg,
       strikeOffsetXMm,
@@ -640,6 +700,25 @@ export const SwingControls = React.forwardRef<SwingControlsHandle, SwingControls
                       swipeAimOffsetDeg > 0 ? 'R' : 'L'
                     }`}
               </span>
+              {Math.abs(windAimHintDeg) >= 0.5 && (
+                <>
+                  <span className="text-slate-500">·</span>
+                  <span className="text-[10px] font-semibold text-amber-300/90">
+                    Wind: aim {Math.abs(windAimHintDeg).toFixed(0)}°{' '}
+                    {windAimHintDeg > 0 ? 'L' : 'R'}
+                  </span>
+                </>
+              )}
+              {Math.abs(swipeFlickShapeDeg) > 1.2 && (
+                <>
+                  <span className="text-slate-500">·</span>
+                  <span
+                    className={swipeFlickShapeDeg > 0 ? 'text-sky-300' : 'text-amber-300'}
+                  >
+                    {swipeFlickShapeDeg > 0 ? 'Draw' : 'Fade'}
+                  </span>
+                </>
+              )}
               {isPutting && (
                 <>
                   <span className="text-slate-500">·</span>
