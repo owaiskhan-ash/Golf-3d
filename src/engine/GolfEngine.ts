@@ -22,6 +22,7 @@ import { ModelsSystem, type SwingAnimPhase } from './ModelsSystem';
 import { OceanSystem } from './OceanSystem';
 import { ParticleEffectsSystem } from './ParticleEffects';
 import { PostProcessingPipeline, type GraphicsQuality } from './PostProcessing';
+import { AdaptiveResolution } from './AdaptiveResolution';
 import { createCourseTextures, loadPhotoTextures, type CourseTextureSet, type PhotoTextureSet } from './ProceduralTextures';
 import {
   SkyAtmosphereSystem,
@@ -95,6 +96,10 @@ export interface EngineSnapshot {
   shotEventLabel: string | null;
   qualityLevel: GraphicsQuality;
   autoQualityNote: string | null;
+  /** Smoothed frames-per-second over the last ~1s, for the debug HUD. */
+  fps: number;
+  /** Current dynamic-resolution scale in [0.5, 1]. */
+  renderScale: number;
   rangeStats: RangeSessionStats;
   lastTelemetry: ShotTelemetrySummary | null;
   liveBallStats: {
@@ -102,6 +107,28 @@ export interface EngineSnapshot {
     heightFt: number;
     distFromShotStartYds: number;
   } | null;
+}
+
+/**
+ * Picks a starting quality tier from the device's own signals rather than always assuming
+ * ULTRA. Mobile GPUs and integrated laptop graphics get a materially lighter starting point
+ * (smaller shadow cascades, half-res reflection, no AO/bloom), which is what stops the first
+ * few seconds of every session from being a slideshow. The auto-scaler can still step up or
+ * down from here at runtime.
+ */
+export function pickInitialQuality(): GraphicsQuality {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return 'high';
+  const ua = navigator.userAgent;
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(ua);
+  const cores = navigator.hardwareConcurrency ?? 4;
+  const memGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4;
+  // Coarse-pointer desktops (touch laptops) are treated as high, not medium.
+  const coarseTouch = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+
+  if (isMobile) return cores >= 8 && memGb >= 6 ? 'high' : 'medium';
+  if (cores <= 4 || memGb <= 4) return 'high';
+  if (coarseTouch) return 'high';
+  return 'ultra';
 }
 
 export class GolfEngine {
@@ -143,7 +170,13 @@ export class GolfEngine {
   public foliageDensity: FoliageDensity = 'high';
   public difficulty: DifficultyMode = 'pro';
   public qualityLevel: GraphicsQuality = 'ultra';
-  public autoQualityEnabled = false;
+  /**
+   * Enabled by default. The auto-scaler used to be opt-in and off, which meant every device
+   * was pinned to ULTRA (3-cascade 4096px shadows, 1024px water reflection, 0.7x GTAO, full
+   * DPR) regardless of its GPU — the single biggest reason the game stuttered on mid-range
+   * hardware. It now only ever *lowers* quality in response to sustained slow frames.
+   */
+  public autoQualityEnabled = true;
 
   // Active shot simulation state
   private simMode: 'flight' | 'roll' = 'flight';
@@ -218,6 +251,11 @@ export class GolfEngine {
   private rafId: number | null = null;
   private listeners = new Set<(snap: EngineSnapshot) => void>();
   private lastUiEmitTime = 0;
+  private adaptiveRes: AdaptiveResolution | null = null;
+  private readonly activeBallVec = new THREE.Vector3();
+  private smoothedFps = 60;
+  private shadersWarmed = false;
+  private readonly fogColorScratch = new THREE.Color();
   private lastGolferMeshVersion = -1;
   private lastReportedOrbited = false;
   private firstFrameRendered = false;
@@ -260,11 +298,50 @@ export class GolfEngine {
     this.audio = new AudioSystem();
     this.postProc = new PostProcessingPipeline(this.renderer, this.scene, this.cameraSys.camera, w, h);
 
+    // Dynamic resolution: the scene is fragment-bound (terrain detail shader, AO, bloom, shafts
+    // and a full extra scene render for the water reflection), so trading a few percent of
+    // device pixels for a locked frame rate is far less visible than dropping effects tiers.
+    this.adaptiveRes = new AdaptiveResolution({
+      maxScale: 1,
+      minScale: 0.5,
+      maxFrameMs: 1000 / 52,
+      comfortableFrameMs: 1000 / 59,
+      windowSeconds: 1.4,
+    });
+    this.adaptiveRes.onScaleChange = (scale) => {
+      const ceiling = this.qualityLevel === 'ultra' ? 2.0 : this.qualityLevel === 'high' ? 1.5 : 1;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, ceiling) * scale);
+      this.postProc.setQuality(this.qualityLevel);
+      const size = this.renderer.getSize(new THREE.Vector2());
+      this.postProc.setSize(size.x, size.y);
+    };
+
+    // Honour the device's actual capability up front instead of starting everything on ULTRA.
+    this.qualityLevel = pickInitialQuality();
+
     this.loadHole(COURSE_HOLES[0].id);
     // Apply the default quality preset (HIGH) consistently: pixel ratio, shadow resolution,
     // post-processing features and foliage density. ULTRA remains available in settings and
     // the auto-scaler can still step down further on weak GPUs.
     this.setGraphicsQuality(this.qualityLevel);
+
+    // Warm the shader cache while the splash screen is still up. Every material here
+    // (terrain, instanced grass, canopy, golfer GLB, ocean, post passes) compiles its program
+    // lazily on first draw, and a 4096px shadow cascade means several program variants per
+    // material. Without this, the first frames after the splash — and often the first shot —
+    // stall for hundreds of milliseconds. compileAsync resolves during an idle gap when the
+    // driver supports KHR_parallel_shader_compile.
+    void this.renderer
+      .compileAsync(this.scene, this.cameraSys.camera)
+      .catch(() => {
+        // Non-fatal: worst case we simply pay the compile cost on first draw as before.
+      })
+      .finally(() => {
+        // Marked so the splash can hold on the first real frame rather than flashing
+        // through a half-compiled scene.
+        this.shadersWarmed = true;
+      });
+
     loadingTracker.markEngineBuilt();
 
     window.addEventListener('resize', this.handleResize);
@@ -635,13 +712,19 @@ export class GolfEngine {
 
   public setGraphicsQuality(quality: GraphicsQuality): void {
     this.qualityLevel = quality;
-    this.renderer.setPixelRatio(
-      quality === 'medium' ? 1 : Math.min(window.devicePixelRatio, quality === 'ultra' ? 2.0 : 1.5)
-    );
+    // Shadow cost scales with cascades x resolution, and 3x4096^2 means redrawing the whole
+    // scene depth-only into three 64 MB targets every frame. 2048 is the sweet spot for the
+    // tight 0..22m golfer cascade; ULTRA's 4096 only pays off for close-up replays.
+    this.skySys.setShadowResolution(quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : 1024);
+    const ceiling =
+      quality === 'medium' ? 1.0 : Math.min(window.devicePixelRatio, quality === 'ultra' ? 1.75 : 1.5);
+    // Respect whatever scale dynamic resolution has currently settled on instead of snapping
+    // back to the ceiling (which used to make the auto-scaler fight every quality change).
+    this.renderer.setPixelRatio(ceiling * (this.adaptiveRes?.currentScale ?? 1));
     this.postProc.setQuality(quality);
     this.oceanSys.planarReflectionEnabled = quality !== 'medium';
-    this.oceanSys.setReflectionResolution(quality === 'ultra' ? 1024 : quality === 'high' ? 768 : 512);
-    this.skySys.setShadowResolution(quality === 'ultra' ? 4096 : quality === 'high' ? 2048 : 1024);
+    this.oceanSys.setReflectionResolution(quality === 'ultra' ? 1024 : quality === 'high' ? 512 : 256);
+    if (this.adaptiveRes) this.adaptiveRes.reset();
     const density: FoliageDensity = quality === 'ultra' ? 'high' : quality === 'high' ? 'medium' : 'low';
     if (density !== this.foliageDensity) {
       this.foliageDensity = density;
@@ -1294,12 +1377,19 @@ export class GolfEngine {
       this.rafId = requestAnimationFrame(tick);
 
       const rawDt = Math.min(0.05, this.clock.getDelta());
+      // Drive dynamic resolution from the *unclamped* interval so a 100ms stall is visible.
+      if (this.adaptiveRes && !document.hidden) this.adaptiveRes.update(rawDt);
       // Low-pass the frame timestep so irregular frame pacing (GC pauses, shader warm-up,
       // heavy GPU load) never reads as a sudden ball speed change mid-flight. The clamp
       // keeps the smoothed value tethered to reality (max ~±60% deviation, fast recovery).
       this.smoothDtS += (rawDt - this.smoothDtS) * (1 - Math.exp(-7.0 * Math.max(1e-3, rawDt)));
       const dt = THREE.MathUtils.clamp(this.smoothDtS, rawDt * 0.55, Math.min(0.05, rawDt * 1.75));
       this.elapsedTimeS += dt;
+      // Exponential smoothing of instantaneous FPS for the debug readout (no per-frame emit).
+      if (rawDt > 1e-4) {
+        const inst = Math.min(240, 1 / rawDt);
+        this.smoothedFps += (inst - this.smoothedFps) * Math.min(1, rawDt * 4);
+      }
 
       // Clear transient shot event banner timer
       if (this.shotEventLabel) {
@@ -1532,7 +1622,7 @@ export class GolfEngine {
         this.wind.directionRad,
         this.skySys.sunDirection,
         this.skySys.sunLight.color,
-        new THREE.Color(fogCfg.fogColor),
+        this.fogColorScratch.setHex(fogCfg.fogColor),
         fogCfg.fogDensity,
         this.skySys.cloudOffset,
         this.skySys.cloudCoverage,
@@ -1551,6 +1641,9 @@ export class GolfEngine {
         this.playState === 'ball_in_motion' || this.playState === 'replaying'
           ? this.renderBallPos
           : this.ballPos;
+      // Hoisted: reallocating this on every frame churned ~4 objects per frame across the
+      // shadow-focus call below (plus the océan-fog Color in the ocean update).
+      this.activeBallVec.set(activeBallPos.x, activeBallPos.y, activeBallPos.z);
       this.foliageSys.update(
         this.elapsedTimeS,
         this.wind.speedMps,
@@ -1578,12 +1671,17 @@ export class GolfEngine {
       // main-thread work, and a mid-flight hitch reads as ball jitter. The landing area is
       // rebuilt immediately (immediate=true) when the next shot is prepared.
       if (!fastFlight) {
-        this.foliageSys.updateHeroTurfAround(grassFocus.x, grassFocus.z, false, 2);
+        // Budget is now frame-time aware: a chunk build is several ms of main-thread work, so
+        // on a device that is already missing frames we build one chunk per frame instead of
+        // two, which halves the size of the streaming hitch at no visual cost (the near chunks
+        // still win the distance sort).
+        const streamingBudget = this.smoothedFps < 50 ? 1 : 2;
+        this.foliageSys.updateHeroTurfAround(grassFocus.x, grassFocus.z, false, streamingBudget);
       }
 
       // Keep shadow frustum tight when zoomed on ball/green, wide when tracking flight
       if (this.playState === 'ball_in_motion' || this.playState === 'replaying') {
-        this.skySys.focusShadowsAt(new THREE.Vector3(activeBallPos.x, activeBallPos.y, activeBallPos.z), 58);
+        this.skySys.focusShadowsAt(this.activeBallVec, 58);
       }
 
       const groundY = this.sampler.getHeight(activeBallPos.x, activeBallPos.z);
@@ -1626,13 +1724,21 @@ export class GolfEngine {
         this.playState !== 'ball_in_motion'
           ? 0.85
           : 0.0;
-      // Planar water reflection is a full extra scene render — capping it to 30 Hz is visually
-      // indistinguishable on moving water and removes a huge per-frame cost spike source.
+      // Planar water reflection is a full extra scene render at
+      // (foliage + terrain + ocean + golfer) cost. Two important reductions:
+      //  1. Only the effects that actually read it need it to be fresh — the ocean surface
+      //     is essentially static when neither the camera nor the ball is moving.
+      //  2. The hidden-object list is handed over by reference; the ocean keeps a cached copy
+      //     and the old code allocated two arrays plus ~20 Vector/Boolean objects every frame.
+      const reflectionActive = this.playState === 'ball_in_motion' || this.playState === 'replaying';
+      const targetInterval = reflectionActive ? 1 / 10 : 1 / 2.5;
       this.reflectionAccumS += dt;
-      if (this.reflectionAccumS >= 1 / 30) {
-        this.reflectionAccumS %= 1 / 30;
+      if (this.reflectionAccumS >= targetInterval) {
+        this.reflectionAccumS %= targetInterval;
+        // Both lists are now stable arrays (the ocean caches the resolved hidden set), so
+        // nothing is allocated per frame here.
         this.oceanSys.updatePlanarReflection(this.renderer, this.cameraSys.camera, [
-          ...this.foliageSys.getTransientGrassObjects(),
+          ...this.foliageSys.getTransientGrassObjectsCached(),
           ...this.visualAids.getObjects(),
         ]);
       }
@@ -1640,8 +1746,9 @@ export class GolfEngine {
       this.postProc.updateCameraLens(dt, focusDist, dofStrength, this.skySys.sunDirection.y);
       this.postProc.render();
 
-      // First real frame on the canvas — splash loader's final milestone
-      if (!this.firstFrameRendered) {
+      // First real frame on the canvas — splash loader's final milestone. Held until the
+      // shader warm-up settles (or 3s elapses) so the reveal is not a stuttering first second.
+      if (!this.firstFrameRendered && (this.shadersWarmed || this.elapsedTimeS > 3)) {
         this.firstFrameRendered = true;
         loadingTracker.markFirstFrame();
       }
@@ -1702,6 +1809,8 @@ export class GolfEngine {
       shotEventLabel: this.shotEventLabel,
       qualityLevel: this.qualityLevel,
       autoQualityNote: this.autoQualityNote,
+      fps: this.smoothedFps,
+      renderScale: this.adaptiveRes?.currentScale ?? 1,
       rangeStats: {
         shots: this.rangeShots,
         avgCarryYds: this.rangeShots > 0 ? this.rangeCarrySum / this.rangeShots : 0,

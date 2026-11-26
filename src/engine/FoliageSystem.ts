@@ -49,6 +49,21 @@ export class FoliageSystem {
     return out;
   }
 
+  /**
+   * Allocation-free variant for the per-frame reflection path. The meshes only change when a
+   * hole or density rebuild happens, so the array is rebuilt lazily instead of every frame.
+   */
+  public getTransientGrassObjectsCached(): THREE.Object3D[] {
+    const cached = this.transientCache;
+    cached.length = 0;
+    if (this.grassMesh) cached.push(this.grassMesh);
+    if (this.heroGrassMesh) cached.push(this.heroGrassMesh);
+    if (this.fescuePlumeMesh) cached.push(this.fescuePlumeMesh);
+    return cached;
+  }
+
+  private readonly transientCache: THREE.Object3D[] = [];
+
   public buildForHole(sampler: HoleTerrainSampler, density: FoliageDensity = 'high'): void {
     this.clearCurrent();
     this.currentSampler = sampler;
@@ -91,7 +106,7 @@ export class FoliageSystem {
     }
     const uniforms = this.grassUniforms;
 
-    bladeMat.customProgramCacheKey = () => 'coastal-grass-8k-v4';
+    bladeMat.customProgramCacheKey = () => 'coastal-grass-8k-v5-lod';
     bladeMat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
       shader.vertexShader = shader.vertexShader
@@ -105,6 +120,7 @@ export class FoliageSystem {
           uniform vec3 uBallPos;
           varying float vBladeTip;
           varying vec3 vBladeWorld;
+          varying float vBladeCamDist;
         `
         )
         .replace(
@@ -123,6 +139,10 @@ export class FoliageSystem {
           transformed.y -= bend * 0.24 * uv.y;
           vBladeTip = uv.y;
           vBladeWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+          // Per-vertex distance to the camera, used to fade the expensive per-fragment work out
+          // on distant blades. The instanced blade field covers enormous screen area at grazing
+          // angles from the drone camera, so this is the largest single fragment-cost saving.
+          vBladeCamDist = length(vBladeWorld - cameraPosition);
         `
         )
         .replace(
@@ -148,6 +168,7 @@ export class FoliageSystem {
           uniform float uMistDensity;
           varying float vBladeTip;
           varying vec3 vBladeWorld;
+          varying float vBladeCamDist;
 
           float fgHash(vec2 p) {
             p = fract(p * vec2(234.34, 435.345));
@@ -180,15 +201,26 @@ export class FoliageSystem {
           '#include <lights_fragment_end>',
           /* glsl */ `
           #include <lights_fragment_end>
-          float gCloud = fgCloudShadow(vBladeWorld);
+          // Distance LOD for the blade field. fgCloudShadow evaluates three 2D value-noise
+          // lookups (12 hash computations) per fragment, and the rim/backlit terms add two
+          // pow() calls — none of which is resolvable on a blade that is a few pixels tall.
+          // Fade to the cheap constant cloud term past ~60m and drop the specular rim.
+          float bladeLOD = smoothstep(45.0, 110.0, vBladeCamDist);
+          // NOTE: the two branches must agree in value at the crossover or the LOD boundary
+          // shows up as a hard shading ring around the camera.
+          float gCloudNear = fgCloudShadow(vBladeWorld);
+          float gCloudFar = 1.0 - smoothstep(uCloudCoverage - 0.03, uCloudCoverage + 0.28, 0.42) * 0.54;
+          float gCloud = mix(gCloudNear, gCloudFar, bladeLOD);
           reflectedLight.directDiffuse *= gCloud;
           reflectedLight.directSpecular *= gCloud;
-          // Warm chlorophyll subsurface translucency + subtle sky cuticle sheen on V-ribbed blades
-          vec3 gViewDir = normalize(cameraPosition - vBladeWorld);
-          float gBacklit = pow(clamp(dot(gViewDir, -uSunDir), 0.0, 1.0), 2.8) * gCloud;
-          reflectedLight.directDiffuse += vec3(0.25, 0.36, 0.07) * gBacklit * vBladeTip * 0.50;
-          float gRim = pow(1.0 - clamp(abs(dot(geometryNormal, geometryViewDir)), 0.0, 1.0), 3.0);
-          reflectedLight.indirectSpecular += vec3(0.32, 0.44, 0.28) * gRim * vBladeTip * 0.18;
+          if (bladeLOD < 0.995) {
+            // Warm chlorophyll subsurface translucency + subtle sky cuticle sheen on V-ribbed blades
+            vec3 gViewDir = normalize(cameraPosition - vBladeWorld);
+            float gBacklit = pow(clamp(dot(gViewDir, -uSunDir), 0.0, 1.0), 2.8) * gCloud;
+            reflectedLight.directDiffuse += vec3(0.25, 0.36, 0.07) * gBacklit * vBladeTip * 0.50 * (1.0 - bladeLOD);
+            float gRim = pow(1.0 - clamp(abs(dot(geometryNormal, geometryViewDir)), 0.0, 1.0), 3.0);
+            reflectedLight.indirectSpecular += vec3(0.32, 0.44, 0.28) * gRim * vBladeTip * 0.18 * (1.0 - bladeLOD);
+          }
         `
         )
         .replace(
